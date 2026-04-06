@@ -1,0 +1,1 @@
+"""Local filesystem object store."""

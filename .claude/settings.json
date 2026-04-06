@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash(source .venv/bin/activate *)",
+      "Bash(cd *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cat *)",
+      "Bash(which *)",
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(pip *)",
+      "Bash(pytest *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(find *)"
+    ]
+  }
+}

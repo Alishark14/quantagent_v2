@@ -1,0 +1,24 @@
+# QuantAgent v2 — Feature Flags
+# All default to false until the feature is implemented and tested.
+# Each flag can be overridden by env var: FEATURE_<FLAG_NAME>=true
+
+# Signal agents (implemented)
+indicator_agent: true
+pattern_agent: true
+trend_agent: true
+
+sentinel_enabled: false
+reflection_enabled: false
+cross_bot_enabled: false
+distribution_discord: false
+distribution_telegram: false
+ml_regime_model: false
+ml_direction_model: false
+ml_anomaly_detector: false
+external_quanthq: false
+external_guavy: false
+external_sentimentrader: false
+mcp_overnight_quant: false
+mcp_macro_manager: false
+chat_enabled: false
+paper_trading_mode: true          # Default ON for safety

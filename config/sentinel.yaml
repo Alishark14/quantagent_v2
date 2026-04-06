@@ -1,0 +1,22 @@
+# QuantAgent v2 — Sentinel Configuration
+# Thresholds, cooldowns, and budget settings for the Sentinel system.
+
+# Readiness threshold (0.0 - 1.0) to trigger analysis pipeline
+readiness_threshold: 0.7
+
+# Minimum cooldown between analysis cycles per symbol (seconds)
+cooldown_seconds: 300
+
+# Maximum budget per cycle (USD) — safeguard against runaway LLM costs
+max_cycle_budget_usd: 0.10
+
+# WebSocket reconnect settings
+ws_reconnect_delay_seconds: 5
+ws_max_reconnect_attempts: 10
+
+# Position manager settings
+position_check_interval_seconds: 60
+orphan_detection_interval_seconds: 300
+
+# Emergency SL: max time without SL before reaper acts (seconds)
+max_time_without_sl_seconds: 600
