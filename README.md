@@ -1,4 +1,4 @@
-![CI](https://github.com/Alishark14/quantshark_v2/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/Alishark14/quantagent_v2/actions/workflows/ci.yml/badge.svg)
 
 # QuantAgent v2
 
@@ -22,8 +22,8 @@ SENTINEL (persistent, code-only, per symbol)
 
 ```bash
 # Clone
-git clone https://github.com/Alishark14/quantshark_v2.git
-cd quantshark_v2
+git clone https://github.com/Alishark14/quantagent_v2.git
+cd quantagent_v2
 
 # Create venv
 python3.12 -m venv .venv
