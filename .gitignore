@@ -31,3 +31,6 @@ trade_logs/
 # OS
 .DS_Store
 Thumbs.db
+env info.rtf
+.qa_last_run.json
+.claude/
