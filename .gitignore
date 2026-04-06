@@ -34,3 +34,11 @@ Thumbs.db
 env info.rtf
 .qa_last_run.json
 .claude/
+
+# Internal docs — not pushed to remote
+SPRINT*.md
+CLAUDE.md
+Architecture.md
+PROJECT_CONTEXT.md
+cowork-skills/
+updates (discussed)/
