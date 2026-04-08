@@ -119,6 +119,7 @@ class PipelineAdapter:
 
         from engine.config import TradingConfig
         from engine.conviction.agent import ConvictionAgent
+        from engine.data.flow import FlowSignalAgent
         from engine.execution.agent import DecisionAgent
         from engine.signals.indicator_agent import IndicatorAgent
         from engine.signals.pattern_agent import PatternAgent
@@ -133,6 +134,7 @@ class PipelineAdapter:
         registry.register(IndicatorAgent(self._llm))
         registry.register(PatternAgent(self._llm))
         registry.register(TrendAgent(self._llm))
+        registry.register(FlowSignalAgent())
         self._registry = registry
 
         self._conviction_agent = ConvictionAgent(self._llm)

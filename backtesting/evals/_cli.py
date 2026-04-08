@@ -16,9 +16,17 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from dotenv import load_dotenv
+
 if TYPE_CHECKING:
     from backtesting.evals.framework import EvalReport
     from backtesting.evals.pipeline_adapter import PipelineAdapter
+
+
+# Load .env at import time so the eval harness scripts (run_smoke.py,
+# run_eval.py, run_eval_full.py) pick up ANTHROPIC_API_KEY and other
+# secrets without requiring a manually exported shell environment.
+load_dotenv()
 
 
 # CI gate threshold (overall pass-rate). >0.50 passes, ≤0.50 fails.

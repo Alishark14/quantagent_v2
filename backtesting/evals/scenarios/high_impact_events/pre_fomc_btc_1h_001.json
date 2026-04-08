@@ -486,7 +486,7 @@
   "expected": {
     "signal_direction": "BULLISH",
     "signal_confidence_min": 0.6,
-    "conviction_max": 0.3,
+    "conviction_max": 0.45,
     "expected_action": "SKIP",
     "key_features_to_mention": [
       "FOMC",

@@ -460,6 +460,63 @@ class TestConvictionPromptContent:
         assert "0.50" in prompt
 
     @pytest.mark.asyncio
+    async def test_flow_signal_renders_in_user_prompt(self) -> None:
+        """4th signal voice (FlowSignalAgent) reaches the LLM via signals_block.
+
+        Regression test for the v1.1→v1.2 prompt refactor: previously the
+        USER_PROMPT had 3 hardcoded blocks (Indicator/Pattern/Trend) and
+        a 4th SignalOutput would never reach the LLM. After the dynamic
+        signals_block change, FlowAgent's voice MUST appear when present.
+        """
+        llm = MockLLMProvider(_high_conviction_response())
+        agent = ConvictionAgent(llm)
+
+        flow_signal = SignalOutput(
+            agent_name="flow_signal_agent",
+            signal_type="flow",
+            direction="BEARISH",
+            confidence=0.70,
+            reasoning=(
+                "BEARISH divergence: price up but funding flipped negative "
+                "and OI dropping — smart money exiting."
+            ),
+            signal_category="directional",
+            data_richness="full",
+            contradictions="",
+            key_levels={},
+            pattern_detected=None,
+            raw_output="BEARISH divergence ...",
+        )
+        signals = _make_signals() + [flow_signal]
+
+        await agent.evaluate(signals, _make_market_data())
+
+        prompt = llm.last_user_prompt
+        assert prompt is not None
+        assert "FlowAgent:" in prompt
+        assert "BEARISH" in prompt
+        assert "0.70" in prompt
+        assert "smart money exiting" in prompt
+
+    @pytest.mark.asyncio
+    async def test_flow_block_renders_empty_when_flow_missing(self) -> None:
+        """When FlowSignalAgent isn't in the signals list, its slot still renders.
+
+        The dynamic signals_block always renders all 4 known agents so the
+        prompt structure stays predictable for the LLM. Missing slots show
+        the standard "Agent did not produce a signal" reasoning.
+        """
+        llm = MockLLMProvider(_high_conviction_response())
+        agent = ConvictionAgent(llm)
+
+        await agent.evaluate(_make_signals(), _make_market_data())
+
+        prompt = llm.last_user_prompt
+        assert prompt is not None
+        assert "FlowAgent:" in prompt  # slot rendered
+        assert "Agent did not produce a signal" in prompt
+
+    @pytest.mark.asyncio
     async def test_memory_context_in_user_prompt(self) -> None:
         llm = MockLLMProvider(_high_conviction_response())
         agent = ConvictionAgent(llm)

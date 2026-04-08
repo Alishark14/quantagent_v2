@@ -66,7 +66,7 @@ class SignalOutput:
     """Output from a SignalProducer (LLM agent or ML model)."""
 
     agent_name: str
-    signal_type: str  # "llm" | "ml"
+    signal_type: str  # "llm" | "ml" | "flow"
     direction: str | None  # "BULLISH" | "BEARISH" | "NEUTRAL" | None
     confidence: float  # 0.0 to 1.0
     reasoning: str

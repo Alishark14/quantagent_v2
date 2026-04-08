@@ -242,6 +242,14 @@ class TestGroundingHeader:
         assert "Parent TF" not in header
 
     def test_includes_flow_data(self) -> None:
+        """Grounding header carries ONLY the funding line.
+
+        Detailed OI / liquidation / GEX dumps used to render here but are
+        now FlowSignalAgent's job (engine/data/flow/signal_agent.py). The
+        other LLM agents (Indicator/Pattern/Trend) should focus on their
+        specialties — flow interpretation lands in ConvictionAgent's
+        signals_block via FlowSignalAgent's SignalOutput.
+        """
         flow = FlowOutput(
             funding_rate=0.042,
             funding_signal="CROWDED_LONG",
@@ -262,12 +270,42 @@ class TestGroundingHeader:
             num_candles=150, lookback_description="~6 days",
         )
 
+        # Funding line is preserved.
         assert "Flow:" in header
         assert "Funding rate:" in header
         assert "CROWDED_LONG" in header
-        assert "OI change:" in header
-        assert "BUILDING" in header
-        assert "POSITIVE_GAMMA" in header
+
+        # Detailed OI / GEX / liquidation rows are gone — those are now
+        # FlowSignalAgent's domain.
+        assert "OI change:" not in header
+        assert "BUILDING" not in header
+        assert "POSITIVE_GAMMA" not in header
+        assert "GEX:" not in header
+        assert "GEX flip:" not in header
+
+    def test_funding_only_when_oi_present_no_oi_line(self) -> None:
+        """Even when oi_change_4h IS populated, the OI line is suppressed."""
+        flow = FlowOutput(
+            funding_rate=0.005,
+            funding_signal="NEUTRAL",
+            oi_change_4h=4.5,
+            oi_trend="BUILDING",
+            nearest_liquidation_above=None,
+            nearest_liquidation_below=None,
+            gex_regime=None,
+            gex_flip_level=None,
+            data_richness="FULL",
+        )
+        header = generate_grounding_header(
+            symbol="BTC-USDC", timeframe="1h",
+            indicators=_make_indicators(), flow=flow, parent_tf=None,
+            swing_highs=[], swing_lows=[],
+            forecast_candles=3, forecast_description="~3 hours",
+            num_candles=150, lookback_description="~6 days",
+        )
+        assert "Funding rate:" in header
+        assert "OI change:" not in header
+        assert "4.5" not in header  # OI value shouldn't leak in
 
     def test_includes_parent_tf(self) -> None:
         parent = ParentTFContext(

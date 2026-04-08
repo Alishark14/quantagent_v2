@@ -83,7 +83,7 @@ def _format_summary(result) -> str:
         f"  Duration:       {result.duration_seconds:.2f}s\n"
         f"  Initial:        ${result.initial_balance:,.2f}\n"
         f"  Final:          ${result.final_balance:,.2f}  ({pnl_pct:+.2f}%)\n"
-        f"  Trades:         {m['num_trades']}  (W {m['wins']} / L {m['losses']})\n"
+        f"  Trades:         {m['total_trades']}  (W {m['winning_trades']} / L {m['losing_trades']})\n"
         f"  Win rate:       {m['win_rate'] * 100:.1f}%\n"
         f"  Total PnL:      ${m['total_pnl']:,.2f}\n"
         f"  Total fees:     ${m['total_fees']:,.2f}\n"

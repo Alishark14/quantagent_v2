@@ -6,6 +6,7 @@
 indicator_agent: true
 pattern_agent: true
 trend_agent: true
+flow_signal_agent: true   # Code-only rules-based flow interpreter (zero LLM cost)
 
 sentinel_enabled: false
 reflection_enabled: false

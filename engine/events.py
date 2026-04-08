@@ -180,6 +180,38 @@ class CycleCompleted(Event):
     conviction: float = 0.0
 
 
+@dataclass
+class SetupResult(Event):
+    """Emitted by BotManager after a SetupDetected-spawned TraderBot completes.
+
+    Closes the feedback loop from `SetupDetected` (Sentinel → BotManager
+    → TraderBot → pipeline) back to the Sentinel so it can adjust its
+    escalation state. The Sentinel never gets to see the analysis
+    pipeline's actual decision otherwise — it just fires events and
+    forgets them. Without this feedback, escalation-after-SKIP would
+    require Sentinel to subscribe to TradeOpened with a heuristic
+    timeout, which is fragile.
+
+    `outcome` is the canonical TRADE / SKIP classification used by
+    Sentinel's escalation logic:
+      * "TRADE" — pipeline opened a new position (LONG / SHORT /
+        ADD_LONG / ADD_SHORT) AND the order succeeded.
+      * "SKIP"  — anything else (SKIP, HOLD, CLOSE_ALL, errored bot,
+        failed order). CLOSE_ALL is classified SKIP because it closes
+        a position rather than opening one — there's no new-entry
+        rationale to reset Sentinel's escalation.
+
+    `action` is the literal TradeAction.action string for traceability.
+    `bot_id` lets the Sentinel correlate this back to a specific spawn.
+    """
+
+    symbol: str = ""
+    outcome: str = "SKIP"  # "TRADE" | "SKIP"
+    action: str = ""  # literal TradeAction.action
+    bot_id: str = ""
+    conviction_score: float = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Event Bus — abstract interface and in-process implementation
 # ---------------------------------------------------------------------------

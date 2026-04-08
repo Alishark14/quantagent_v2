@@ -29,6 +29,8 @@ import numpy as np
 from backtesting.data_loader import ParquetDataLoader
 from backtesting.mock_signals import MockSignalProducer
 from backtesting.sim_exchange import SimulatedExchangeAdapter
+from engine.execution.cost_model import ExecutionCostModel
+from engine.execution.cost_models import get_cost_model
 from backtesting.sim_executor import SimExecutor
 from engine.config import DEFAULT_PROFILES
 from engine.data.indicators import compute_all_indicators
@@ -138,11 +140,20 @@ class BacktestEngine:
         signal_producer: MockSignalProducer | None = None,
         event_bus: EventBus | None = None,
         adapter: SimulatedExchangeAdapter | None = None,
+        cost_model: ExecutionCostModel | None = None,
     ) -> None:
         self._config = config
         self._loader = data_loader or ParquetDataLoader(exchange=config.exchange)
         self._signal_producer = signal_producer or MockSignalProducer("always_skip")
         self._bus = event_bus or InProcessBus()
+
+        # Pick a cost model from the config exchange so simulated fills are
+        # billed at realistic rates. Callers may inject an explicit model
+        # (tests, scenario sweeps, custom fee tiers); None falls through
+        # to the per-exchange default. If a pre-built `adapter` is also
+        # passed in we honour the adapter's existing fee model — never
+        # silently overwrite caller intent.
+        self._cost_model = cost_model or get_cost_model(config.exchange)
 
         # Inject loader into adapter so fetch_ohlcv works for any code path
         # that asks the sim adapter for historical data.
@@ -150,6 +161,7 @@ class BacktestEngine:
             initial_balance=config.initial_balance,
             slippage_pct=config.slippage_pct,
             data_loader=self._loader,
+            fee_model=self._cost_model,
         )
         self._executor = SimExecutor(self._adapter)
         self._scorer = ReadinessScorer()

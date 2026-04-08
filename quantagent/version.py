@@ -10,7 +10,7 @@ Versioning: YYYY.MM.MAJOR.MINOR.PATCH[-prerelease][+build]
 Every trade record stores engine_version + prompt_versions at decision time.
 """
 
-ENGINE_VERSION = "2026.04.2.12.0-alpha.1"
+ENGINE_VERSION = "2026.04.2.15.0-alpha.1"
 
 API_VERSION = "v1"
 
@@ -18,9 +18,10 @@ PROMPT_VERSIONS: dict[str, str] = {
     "indicator_agent": "3.2",
     "pattern_agent": "2.1",
     "trend_agent": "2.1",
-    "conviction_agent": "1.0",
+    "conviction_agent": "1.2",
     "decision_agent": "2.0",
     "reflection_agent": "1.0",
+    "flow_signal_agent": "1.0",
     "quant_data_scientist": "1.0",
     "macro_regime_manager": "1.0",
 }

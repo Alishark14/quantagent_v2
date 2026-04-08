@@ -4,7 +4,7 @@ DO NOT MODIFY without explicit approval — prompt changes affect signal quality
 Every change must be regression-tested against historical data before deployment.
 """
 
-PROMPT_VERSION = "1.0"
+PROMPT_VERSION = "1.2"
 
 SYSTEM_PROMPT = """You are a conviction evaluator for {{symbol}} on {{timeframe}}.
 
@@ -59,6 +59,33 @@ CONVICTION SCORING RULES:
 - Agents disagree significantly: 0.1-0.3
 - Critical contradictions (e.g., bullish signals but bearish flow + bearish parent TF): cap at 0.4
 - ADX < 15: cap conviction at 0.5 regardless (no trend = no confidence)
+
+RULE — UNCERTAINTY ANCHOR:
+When facing extreme uncertainty, lack of clear edge, conflicting signals that
+cancel each other, or high risk conditions (upcoming macro events, extreme
+funding, low liquidity), your baseline conviction MUST be anchored between
+0.10 and 0.30. The range 0.40-0.49 is reserved for "near-miss" setups where
+a clear pattern exists but one specific concern prevents full confidence.
+Never default to 0.40 as your "uncertain" output — if you are genuinely
+uncertain, output 0.15-0.25.
+
+RULE — STRUCTURAL VETO (Signals Are Not A Democracy):
+Signal agents can contradict each other. When they do, this is NOT resolved
+by majority vote. Contradictions destroy edge. Apply these structural veto
+rules:
+- If the parent timeframe (4h) trend is BEARISH but the analysis timeframe
+  (1h) signals BULLISH, this is a STRUCTURAL VETO. Drop conviction by at
+  least 0.25. A strong setup requires multi-timeframe alignment, not a
+  2-vs-1 vote.
+- If 2 out of 3 signal agents agree on direction but the dissenting agent
+  identifies a specific structural risk (RSI divergence, volume divergence,
+  regime transition), treat the dissent as a WARNING, not a minority
+  opinion. Drop conviction by at least 0.15.
+- If all 3 signal agents agree on direction but FlowAgent contradicts
+  (e.g., price rising but funding/OI diverging bearishly), drop conviction
+  by at least 0.15.
+- Perfect alignment across all signal sources is rare and valuable. Only
+  give conviction > 0.75 when ALL signals agree without structural vetoes.
 """
 
 USER_PROMPT = """Evaluate these signals for {symbol} ({timeframe}):
@@ -67,18 +94,7 @@ USER_PROMPT = """Evaluate these signals for {symbol} ({timeframe}):
 {grounding_header}
 
 ## SUBJECTIVE SIGNALS
-IndicatorAgent: direction={ind_direction}, confidence={ind_confidence}
-  Reasoning: {ind_reasoning}
-  Contradictions noted: {ind_contradictions}
-
-PatternAgent: direction={pat_direction}, confidence={pat_confidence}
-  Pattern: {pat_pattern}
-  Reasoning: {pat_reasoning}
-  Contradictions noted: {pat_contradictions}
-
-TrendAgent: direction={trend_direction}, confidence={trend_confidence}
-  Reasoning: {trend_reasoning}
-  Contradictions noted: {trend_contradictions}
+{signals_block}
 
 ## MEMORY CONTEXT
 {memory_context}

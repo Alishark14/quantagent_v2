@@ -109,6 +109,7 @@ async def main(symbol: str, timeframe: str, verbose: bool, testnet: bool) -> Non
     from engine.memory.reflection_rules import ReflectionRules
     from engine.memory.regime_history import RegimeHistory
     from engine.pipeline import AnalysisPipeline
+    from engine.data.flow import FlowSignalAgent
     from engine.signals.indicator_agent import IndicatorAgent
     from engine.signals.pattern_agent import PatternAgent
     from engine.signals.registry import SignalRegistry
@@ -154,6 +155,7 @@ async def main(symbol: str, timeframe: str, verbose: bool, testnet: bool) -> Non
     registry.register(IndicatorAgent(llm, flags))
     registry.register(PatternAgent(llm, flags))
     registry.register(TrendAgent(llm, flags))
+    registry.register(FlowSignalAgent(flags))
 
     # Conviction + Decision
     conviction_agent = ConvictionAgent(llm)

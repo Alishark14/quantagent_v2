@@ -17,7 +17,17 @@ class SignalProducer(ABC):
 
     @abstractmethod
     def signal_type(self) -> str:
-        """'llm' or 'ml'"""
+        """One of: 'llm', 'ml', 'flow'.
+
+        - ``llm``: Claude / GPT-style text or vision agents.
+        - ``ml``: trained statistical / neural models.
+        - ``flow``: code-only rules-based agents that interpret order
+          flow (funding, OI, liquidations) without an LLM call.
+
+        New strings can be added in the future without breaking the ABC,
+        but consumers that filter by ``signal_type`` should treat unknown
+        values defensively.
+        """
         ...
 
     @abstractmethod

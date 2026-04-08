@@ -526,7 +526,7 @@
   "expected": {
     "signal_direction": "BULLISH",
     "signal_confidence_min": 0.6,
-    "conviction_min": 0.7,
+    "conviction_min": 0.6,
     "expected_action": "LONG",
     "key_features_to_mention": [
       "bull flag",

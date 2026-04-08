@@ -54,6 +54,23 @@ _VALID_DIRECTIONS = {"LONG", "SHORT", "SKIP"}
 _VALID_REGIMES = {"TRENDING_UP", "TRENDING_DOWN", "RANGING", "HIGH_VOLATILITY", "BREAKOUT"}
 _VALID_QUALITY = {"HIGH", "MEDIUM", "LOW", "CONFLICTING"}
 
+# Display names rendered in the conviction prompt for known signal agents.
+# Keys are ``SignalProducer.name()`` values; values are the display name
+# the LLM sees in the SUBJECTIVE SIGNALS block. Insertion order is the
+# rendering order — keep this stable so prompt-cache hits and eval
+# calibration don't drift across cycles.
+_AGENT_DISPLAY_NAMES: dict[str, str] = {
+    "indicator_agent": "IndicatorAgent",
+    "pattern_agent": "PatternAgent",
+    "trend_agent": "TrendAgent",
+    "flow_signal_agent": "FlowAgent",
+}
+
+# Agents whose signals always render a "Pattern:" line in the prompt.
+# Other agents only render Pattern when ``pattern_detected`` is non-empty,
+# matching the historical v1.0/v1.1 behaviour for IndicatorAgent / TrendAgent.
+_PATTERN_LINE_ALWAYS_FOR: frozenset[str] = frozenset({"pattern_agent"})
+
 _SAFE_DEFAULT = ConvictionOutput(
     conviction_score=0.0,
     direction="SKIP",
@@ -136,28 +153,19 @@ class ConvictionAgent:
             system = system.replace("{{timeframe}}", market_data.timeframe)
             system = system.replace("{{grounding_header}}", grounding)
 
-            # Format user prompt
-            ind = signal_map.get("indicator_agent", self._empty_signal())
-            pat = signal_map.get("pattern_agent", self._empty_signal())
-            trend = signal_map.get("trend_agent", self._empty_signal())
+            # Render the SUBJECTIVE SIGNALS block dynamically so the prompt
+            # is N-signal aware. All known agents in `_AGENT_DISPLAY_NAMES`
+            # are rendered in fixed order; any unknown agents land at the
+            # bottom in alphabetical order. Missing known agents render
+            # an explicit "Agent did not produce a signal" block so the
+            # LLM still sees a stable structure.
+            signals_block = self._build_signals_block(signal_map)
 
             user = USER_PROMPT.format(
                 symbol=market_data.symbol,
                 timeframe=market_data.timeframe,
                 grounding_header=grounding,
-                ind_direction=ind["direction"],
-                ind_confidence=ind["confidence"],
-                ind_reasoning=ind["reasoning"],
-                ind_contradictions=ind["contradictions"],
-                pat_direction=pat["direction"],
-                pat_confidence=pat["confidence"],
-                pat_pattern=pat["pattern"],
-                pat_reasoning=pat["reasoning"],
-                pat_contradictions=pat["contradictions"],
-                trend_direction=trend["direction"],
-                trend_confidence=trend["confidence"],
-                trend_reasoning=trend["reasoning"],
-                trend_contradictions=trend["contradictions"],
+                signals_block=signals_block,
                 memory_context=memory_context,
             )
 
@@ -250,6 +258,56 @@ class ConvictionAgent:
         for signal in signals:
             result[signal.agent_name] = self._format_signal(signal)
         return result
+
+    def _build_signals_block(self, signal_map: dict[str, dict]) -> str:
+        """Render the SUBJECTIVE SIGNALS block from a signal_map.
+
+        Known agents render in the fixed order declared by
+        ``_AGENT_DISPLAY_NAMES``. Unknown agents (e.g. an experimental
+        ML producer that nobody added to the display map yet) land at
+        the bottom in alphabetical order so the prompt structure stays
+        deterministic. Missing known agents render an explicit
+        "Agent did not produce a signal" block — the LLM should always
+        see a slot for every expected voice so silence is observable.
+        """
+        rendered_keys: set[str] = set()
+        blocks: list[str] = []
+
+        for key, display_name in _AGENT_DISPLAY_NAMES.items():
+            sig = signal_map.get(key, self._empty_signal())
+            blocks.append(self._render_signal_block(key, display_name, sig))
+            rendered_keys.add(key)
+
+        unknown_keys = sorted(set(signal_map.keys()) - rendered_keys)
+        for key in unknown_keys:
+            display_name = _fallback_display_name(key)
+            blocks.append(self._render_signal_block(key, display_name, signal_map[key]))
+
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _render_signal_block(agent_key: str, display_name: str, sig: dict) -> str:
+        """Render one agent's block in the prompt.
+
+        Format mirrors the historical v1.0/v1.1 layout exactly for
+        IndicatorAgent / PatternAgent / TrendAgent so existing eval
+        calibration and prompt-cache hits don't drift. New agents
+        (FlowAgent, future ML producers) follow the same layout.
+
+        The Pattern line always renders for ``pattern_agent`` (matching
+        the old hardcoded template) and renders for any other agent
+        whose ``pattern_detected`` field is non-empty / non-"none".
+        """
+        lines = [
+            f"{display_name}: direction={sig['direction']}, confidence={sig['confidence']}"
+        ]
+        pattern = sig.get("pattern", "none")
+        always_pattern = agent_key in _PATTERN_LINE_ALWAYS_FOR
+        if always_pattern or (pattern and pattern != "none"):
+            lines.append(f"  Pattern: {pattern}")
+        lines.append(f"  Reasoning: {sig['reasoning']}")
+        lines.append(f"  Contradictions noted: {sig['contradictions']}")
+        return "\n".join(lines)
 
     def _format_signal(self, signal: SignalOutput) -> dict:
         """Extract display fields from a signal for prompt formatting."""
@@ -348,6 +406,16 @@ class ConvictionAgent:
             return brace_match.group(0)
 
         return None
+
+
+def _fallback_display_name(agent_key: str) -> str:
+    """Title-case an unknown agent's name for the SUBJECTIVE SIGNALS block.
+
+    Used for any agent whose name() isn't in ``_AGENT_DISPLAY_NAMES`` —
+    typically an experimental producer registered in dev. Converts
+    ``"foo_bar_agent"`` → ``"FooBarAgent"``.
+    """
+    return "".join(part.capitalize() for part in agent_key.split("_"))
 
 
 def _safe_default_with_raw(raw: str) -> ConvictionOutput:

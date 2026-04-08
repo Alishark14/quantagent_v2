@@ -66,17 +66,17 @@ footer code { background: var(--card-bg); border: 1px solid var(--border); paddi
 </head><body><main>
 <header>
 <h1>QuantAgent Eval Report</h1>
-<p class="subtitle">Generated 2026-04-08 08:06 UTC</p>
+<p class="subtitle">Generated 2026-04-08 20:35 UTC</p>
 <dl class="meta">
 <dt>Total scenarios</dt><dd>15</dd>
-<dt>Runs per scenario</dt><dd>1</dd>
-<dt>Duration</dt><dd>0.0s</dd>
+<dt>Runs per scenario</dt><dd>3</dd>
+<dt>Duration</dt><dd>530.4s</dd>
 </dl>
 </header>
 <section><h2>Overall Score</h2><div class="hero warn">
-<span class="value">60.0%</span>
+<span class="value">53.3%</span>
 <span class="label">overall pass rate</span>
-<span class="sub">consistency stdev: 0.0000</span>
+<span class="sub">consistency stdev: 0.0212</span>
 </div></section>
 <section><h2>By Category</h2><table class="cats">
 <thead><tr><th>Category</th><th>Passed</th><th>Pass rate</th></tr></thead>
@@ -87,10 +87,10 @@ footer code { background: var(--card-bg); border: 1px solid var(--border); paddi
 <tr><td>edge_cases</td><td>0 / 1</td><td class="bad">0.0%</td></tr>
 <tr><td>flow_divergence</td><td>0 / 2</td><td class="bad">0.0%</td></tr>
 <tr><td>high_impact_events</td><td>1 / 2</td><td class="warn">50.0%</td></tr>
-<tr><td>regime_transitions</td><td>2 / 2</td><td class="good">100.0%</td></tr>
+<tr><td>regime_transitions</td><td>1 / 2</td><td class="warn">50.0%</td></tr>
 <tr><td>trap_setups</td><td>0 / 2</td><td class="bad">0.0%</td></tr></tbody>
 </table></section>
 
-<section><h2>Top Failures</h2><ul class="failures"><li><strong>extreme_funding_low_liquidity_sol_1h_001</strong> <span class="category">[edge_cases]</span><br><span class="name">SOL 1h extreme funding + low liquidity</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;</span></li><li><strong>price_down_oi_building_eth_1h_001</strong> <span class="category">[flow_divergence]</span><br><span class="name">ETH 1h price down / OI building accumulation</span><br><span class="reason">action &#x27;SKIP&#x27; != expected &#x27;LONG&#x27;; direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;; conviction 0.300 below min 0.500</span></li><li><strong>price_up_flow_bearish_btc_1h_001</strong> <span class="category">[flow_divergence]</span><br><span class="name">BTC 1h price up / flow bearish divergence</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BEARISH&#x27;</span></li><li><strong>pre_fomc_btc_1h_001</strong> <span class="category">[high_impact_events]</span><br><span class="name">BTC 1h bull flag — but FOMC in 2 hours</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;</span></li><li><strong>bear_trap_eth_1h_001</strong> <span class="category">[trap_setups]</span><br><span class="name">ETH 1h bear trap / spring</span><br><span class="reason">action &#x27;SKIP&#x27; != expected &#x27;LONG&#x27;; direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;; conviction 0.300 below min 0.500</span></li><li><strong>distribution_top_btc_4h_001</strong> <span class="category">[trap_setups]</span><br><span class="name">BTC 4h distribution top — fake breakout</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BEARISH&#x27;</span></li></ul></section>
-<footer><p>Model: <code>2026.04.2.7.1-alpha.1</code></p><p>Prompts: <code>conviction_agent=1.0, decision_agent=2.0, indicator_agent=3.2, pattern_agent=2.1, reflection_agent=1.0, trend_agent=2.1</code></p></footer>
+<section><h2>Top Failures</h2><ul class="failures"><li><strong>extreme_funding_low_liquidity_sol_1h_001</strong> <span class="category">[edge_cases]</span><br><span class="name">SOL 1h extreme funding + low liquidity</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;</span></li><li><strong>price_down_oi_building_eth_1h_001</strong> <span class="category">[flow_divergence]</span><br><span class="name">ETH 1h price down / OI building accumulation</span><br><span class="reason">action &#x27;SKIP&#x27; != expected &#x27;LONG&#x27;; direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;; conviction 0.250 below min 0.500; conviction 0.250 below min 0.500; conviction 0.200 below min 0.500</span></li><li><strong>price_up_flow_bearish_btc_1h_001</strong> <span class="category">[flow_divergence]</span><br><span class="name">BTC 1h price up / flow bearish divergence</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BEARISH&#x27;</span></li><li><strong>pre_fomc_btc_1h_001</strong> <span class="category">[high_impact_events]</span><br><span class="name">BTC 1h bull flag — but FOMC in 2 hours</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;</span></li><li><strong>quiet_to_volatile_eth_1h_001</strong> <span class="category">[regime_transitions]</span><br><span class="name">ETH 1h quiet → sudden volatility expansion</span><br><span class="reason">action &#x27;SHORT&#x27; != expected &#x27;SKIP&#x27;; conviction 0.550 above max 0.400</span></li><li><strong>bear_trap_eth_1h_001</strong> <span class="category">[trap_setups]</span><br><span class="name">ETH 1h bear trap / spring</span><br><span class="reason">action &#x27;SKIP&#x27; != expected &#x27;LONG&#x27;; direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;; conviction 0.450 below min 0.500; conviction 0.450 below min 0.500; conviction 0.450 below min 0.500</span></li><li><strong>distribution_top_btc_4h_001</strong> <span class="category">[trap_setups]</span><br><span class="name">BTC 4h distribution top — fake breakout</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BEARISH&#x27;</span></li></ul></section>
+<footer><p>Model: <code>2026.04.2.14.0-alpha.1</code></p><p>Prompts: <code>conviction_agent=1.2, decision_agent=2.0, flow_signal_agent=1.0, indicator_agent=3.2, macro_regime_manager=1.0, pattern_agent=2.1, quant_data_scientist=1.0, reflection_agent=1.0, trend_agent=2.1</code></p></footer>
 </main></body></html>

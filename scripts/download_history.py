@@ -27,6 +27,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from backtesting.data_downloader import HistoricalDataDownloader  # noqa: E402
 from exchanges.factory import ExchangeFactory  # noqa: E402
 import exchanges.hyperliquid  # noqa: E402,F401  # ensure HL adapter registers
+import exchanges.binance  # noqa: E402,F401  # ensure Binance adapter registers
 
 
 def _parse_args() -> argparse.Namespace:

@@ -423,19 +423,17 @@ def generate_grounding_header(
 
         lines.append(" | ".join(parts))
 
-    # Flow data
+    # Flow data — only the funding rate stays in the grounding header.
+    # OI deltas, GEX regime, and liquidation clusters used to be dumped
+    # here but are now FlowSignalAgent's job. The other LLM agents
+    # (Indicator / Pattern / Trend) should focus on their specialties;
+    # FlowSignalAgent renders flow into a directional signal that lands
+    # in ConvictionAgent's signals_block alongside the LLM voices.
     if flow is not None:
-        flow_parts: list[str] = []
         if hasattr(flow, "funding_rate") and flow.funding_rate is not None:
-            flow_parts.append(f"Funding rate: {flow.funding_rate:+.4f}% ({flow.funding_signal})")
-        if hasattr(flow, "oi_change_4h") and flow.oi_change_4h is not None:
-            flow_parts.append(f"OI change: {flow.oi_change_4h:+.1f}% ({flow.oi_trend})")
-        if hasattr(flow, "gex_regime") and flow.gex_regime is not None:
-            flow_parts.append(f"GEX: {flow.gex_regime}")
-            if flow.gex_flip_level is not None:
-                flow_parts.append(f"GEX flip: {flow.gex_flip_level:.2f}")
-        if flow_parts:
-            lines.append("Flow: " + " | ".join(flow_parts))
+            lines.append(
+                f"Flow: Funding rate: {flow.funding_rate:+.4f}% ({flow.funding_signal})"
+            )
 
     # Parent TF
     if parent_tf is not None:

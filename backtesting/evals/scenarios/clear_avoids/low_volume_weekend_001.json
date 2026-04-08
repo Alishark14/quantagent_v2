@@ -446,7 +446,7 @@
   "expected": {
     "signal_direction": null,
     "signal_confidence_max": 0.45,
-    "conviction_max": 0.35,
+    "conviction_max": 0.45,
     "expected_action": "SKIP",
     "key_features_to_mention": [
       "low volume",

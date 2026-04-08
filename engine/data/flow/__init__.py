@@ -2,6 +2,12 @@
 
 Code-only, zero LLM cost. Merges partial dicts from FlowProviders
 into a single FlowOutput with data_richness classification.
+
+Re-exports :class:`FlowSignalAgent` from
+``engine.data.flow.signal_agent`` for ergonomic ``from engine.data.flow
+import FlowSignalAgent`` imports — the signal agent is the consumer of
+``FlowAgent``'s output, but the two live side by side because they share
+the same domain.
 """
 
 from __future__ import annotations
@@ -9,10 +15,13 @@ from __future__ import annotations
 import logging
 
 from engine.data.flow.base import FlowProvider
+from engine.data.flow.signal_agent import FlowSignalAgent
 from engine.types import FlowOutput
 from exchanges.base import ExchangeAdapter
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["FlowAgent", "FlowProvider", "FlowSignalAgent"]
 
 
 class FlowAgent:

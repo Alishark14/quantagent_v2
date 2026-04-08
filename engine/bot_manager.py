@@ -2,6 +2,13 @@
 
 Subscribes to SetupDetected events from Sentinel. Enforces per-symbol
 concurrent limits. Cleans up after bots complete or crash.
+
+Closes the feedback loop back to Sentinel: after every spawned (and
+manually-spawned) TraderBot finishes, BotManager publishes a
+`SetupResult` event so the Sentinel can ratchet its readiness
+threshold up after a SKIP and reset it after a TRADE. The TRADE / SKIP
+classification is derived from the bot's result dict — see
+`_classify_outcome` below for the canonical rules.
 """
 
 from __future__ import annotations
@@ -11,10 +18,23 @@ import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from engine.events import EventBus, SetupDetected
+from engine.events import EventBus, SetupDetected, SetupResult
 from engine.trader_bot import TraderBot
 
 logger = logging.getLogger(__name__)
+
+
+# Actions that count as "the pipeline opened a new position" — anything
+# else (SKIP / HOLD / CLOSE_ALL / errors / failed orders) is classified
+# as a SKIP outcome for Sentinel escalation purposes.
+#
+# CLOSE_ALL is intentionally NOT in this set: it closes a position
+# rather than opening one, so there's no new-entry rationale to reset
+# Sentinel's escalation. (Future work: distinguish CLOSE outcomes if
+# escalation logic ever needs them.)
+_TRADE_ACTIONS: frozenset[str] = frozenset({
+    "LONG", "SHORT", "ADD_LONG", "ADD_SHORT",
+})
 
 
 class BotManager:
@@ -73,6 +93,7 @@ class BotManager:
 
     async def _run_bot(self, symbol: str, bot_id: str) -> None:
         """Run a TraderBot and clean up after it completes."""
+        result: dict | None = None
         try:
             bot = self._bot_factory(symbol, bot_id)
             result = await bot.run()
@@ -85,13 +106,14 @@ class BotManager:
 
         except Exception as e:
             logger.error(f"BotManager: {bot_id} crashed — {e}", exc_info=True)
-            self._results.append({
+            result = {
                 "bot_id": bot_id,
                 "status": "CRASH",
                 "action": "SKIP",
                 "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            self._results.append(result)
 
         finally:
             async with self._lock:
@@ -99,6 +121,14 @@ class BotManager:
                 active_ids.discard(bot_id)
                 if not active_ids:
                     del self._active[symbol]
+
+        # Emit SetupResult OUTSIDE the lock so the handler chain (which
+        # may call into Sentinel state) doesn't sit on our active-set
+        # mutex. Failures to publish are logged but never propagate —
+        # the bot already finished, the cleanup is done, and the
+        # Sentinel feedback loop is best-effort.
+        if result is not None:
+            await self._publish_setup_result(symbol, bot_id, result)
 
     async def spawn_bot(self, symbol: str) -> dict:
         """Manually spawn a bot for a symbol. Returns the result dict.
@@ -113,6 +143,11 @@ class BotManager:
                 self._active[symbol] = set()
             active_ids = self._active[symbol]
             if len(active_ids) >= self._max_concurrent:
+                # Concurrency-blocked: do NOT publish a SetupResult.
+                # The pipeline never ran, so there's no SKIP/TRADE
+                # outcome to feed back to the Sentinel — the situation
+                # is "we already have a bot for this symbol", which is
+                # orthogonal to escalation.
                 return {
                     "bot_id": bot_id,
                     "status": "SKIPPED",
@@ -121,14 +156,14 @@ class BotManager:
                 }
             active_ids.add(bot_id)
 
+        result: dict
         try:
             bot = self._bot_factory(symbol, bot_id)
             result = await bot.run()
             self._results.append(result)
-            return result
         except Exception as e:
             logger.error(f"BotManager: manual spawn {bot_id} crashed — {e}", exc_info=True)
-            return {
+            result = {
                 "bot_id": bot_id,
                 "status": "CRASH",
                 "action": "SKIP",
@@ -140,6 +175,61 @@ class BotManager:
                 active_ids.discard(bot_id)
                 if not active_ids and symbol in self._active:
                     del self._active[symbol]
+
+        # Publish OUTSIDE the lock — same rationale as `_run_bot`.
+        await self._publish_setup_result(symbol, bot_id, result)
+        return result
+
+    # ------------------------------------------------------------------
+    # SetupResult publication
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _classify_outcome(result: dict) -> str:
+        """Map a TraderBot result dict to a SetupResult outcome.
+
+        Returns "TRADE" only when the action is one of LONG / SHORT /
+        ADD_LONG / ADD_SHORT AND the order_result reports success.
+        Everything else (SKIP, HOLD, CLOSE_ALL, errored bot, failed
+        order, missing order_result) classifies as "SKIP".
+
+        See the module-level _TRADE_ACTIONS for the canonical action
+        set, and the SetupResult docstring in engine/events.py for the
+        contract.
+        """
+        action = result.get("action", "")
+        if action not in _TRADE_ACTIONS:
+            return "SKIP"
+        # Action is a new-position open. Now check the order result.
+        order = result.get("order_result")
+        if not isinstance(order, dict):
+            return "SKIP"
+        return "TRADE" if order.get("success") else "SKIP"
+
+    async def _publish_setup_result(
+        self, symbol: str, bot_id: str, result: dict
+    ) -> None:
+        """Publish a SetupResult event derived from a bot result dict.
+
+        Failures to publish are logged but never propagate — the
+        Sentinel feedback loop is best-effort and must not crash the
+        bot lifecycle.
+        """
+        outcome = self._classify_outcome(result)
+        try:
+            await self._bus.publish(SetupResult(
+                source="bot_manager",
+                symbol=symbol,
+                outcome=outcome,
+                action=str(result.get("action", "")),
+                bot_id=bot_id,
+                conviction_score=float(result.get("conviction_score", 0.0) or 0.0),
+            ))
+        except Exception:
+            logger.warning(
+                f"BotManager: failed to publish SetupResult for {bot_id}",
+                exc_info=True,
+            )
 
     def active_count(self, symbol: str) -> int:
         """Number of active bots for a symbol."""

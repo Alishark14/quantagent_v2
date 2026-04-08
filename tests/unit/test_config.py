@@ -222,7 +222,8 @@ class TestFeatureFlags:
         flags = ff.all_flags()
         assert "paper_trading_mode" in flags
         assert "sentinel_enabled" in flags
-        assert len(flags) == 18
+        assert "flow_signal_agent" in flags
+        assert len(flags) == 19
 
     def test_env_override_true(self) -> None:
         ff = FeatureFlags()
