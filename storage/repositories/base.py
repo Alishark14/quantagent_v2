@@ -94,6 +94,15 @@ class BotRepository(ABC):
         ...
 
     @abstractmethod
+    async def get_active_bots(self) -> list[dict]:
+        """Get all bots with status='active' across all users.
+
+        Used by BotRunner on startup to restore state without
+        requiring re-registration via API.
+        """
+        ...
+
+    @abstractmethod
     async def update_bot_health(self, bot_id: str, health: dict) -> bool:
         """Update bot health snapshot. Returns True if bot was found."""
         ...

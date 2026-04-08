@@ -95,10 +95,11 @@ async def _run_server() -> None:
         bot_manager=bot_manager,
     )
 
-    # Load active bots from DB
-    # Since BotRepository.get_bots_by_user requires a user_id,
-    # we start with no bots — they're added via API at runtime.
-    await runner.start()
+    # Load active bots from DB so the runner restores state on restart
+    # without requiring re-registration via API.
+    active_bots = await repos.bots.get_active_bots()
+    logger.info(f"Loaded {len(active_bots)} active bots from database")
+    await runner.start_with_bots(active_bots)
 
     # ── Create FastAPI app ──
     app = create_app()

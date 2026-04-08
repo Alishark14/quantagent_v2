@@ -378,6 +378,20 @@ class SQLiteBotRepository(BotRepository):
                 row["last_health"] = json.loads(row["last_health"])
         return rows
 
+    async def get_active_bots(self) -> list[dict]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bots WHERE status = ?", ("active",)
+            ) as cursor:
+                rows = [dict(row) async for row in cursor]
+        for row in rows:
+            if row.get("config_json"):
+                row["config_json"] = json.loads(row["config_json"])
+            if row.get("last_health"):
+                row["last_health"] = json.loads(row["last_health"])
+        return rows
+
     async def update_bot_health(self, bot_id: str, health: dict) -> bool:
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(

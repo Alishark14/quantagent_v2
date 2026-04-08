@@ -360,6 +360,19 @@ class PostgresBotRepository(BotRepository):
                 row["last_health"] = json.loads(row["last_health"])
         return results
 
+    async def get_active_bots(self) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM bots WHERE status = $1", "active"
+            )
+        results = [_record_to_dict(r) for r in rows]
+        for row in results:
+            if row.get("config_json") and isinstance(row["config_json"], str):
+                row["config_json"] = json.loads(row["config_json"])
+            if row.get("last_health") and isinstance(row["last_health"], str):
+                row["last_health"] = json.loads(row["last_health"])
+        return results
+
     async def update_bot_health(self, bot_id: str, health: dict) -> bool:
         async with self._pool.acquire() as conn:
             result = await conn.execute(
