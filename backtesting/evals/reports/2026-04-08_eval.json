@@ -1,0 +1,676 @@
+{
+  "timestamp": "2026-04-08T08:06:04.094239+00:00",
+  "total_scenarios": 15,
+  "runs_per_scenario": 1,
+  "overall_pass_rate": 0.6,
+  "by_category": [
+    {
+      "category": "clear_avoids",
+      "total": 2,
+      "passed": 2,
+      "pass_rate": 1.0
+    },
+    {
+      "category": "clear_setups",
+      "total": 2,
+      "passed": 2,
+      "pass_rate": 1.0
+    },
+    {
+      "category": "conflicting_signals",
+      "total": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    {
+      "category": "cross_tf_conflicts",
+      "total": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    {
+      "category": "edge_cases",
+      "total": 1,
+      "passed": 0,
+      "pass_rate": 0.0
+    },
+    {
+      "category": "flow_divergence",
+      "total": 2,
+      "passed": 0,
+      "pass_rate": 0.0
+    },
+    {
+      "category": "high_impact_events",
+      "total": 2,
+      "passed": 1,
+      "pass_rate": 0.5
+    },
+    {
+      "category": "regime_transitions",
+      "total": 2,
+      "passed": 2,
+      "pass_rate": 1.0
+    },
+    {
+      "category": "trap_setups",
+      "total": 2,
+      "passed": 0,
+      "pass_rate": 0.0
+    }
+  ],
+  "consistency_avg_stdev": 0.0,
+  "scenario_results": [
+    {
+      "scenario_id": "chop_btc_1h_001",
+      "scenario_name": "BTC 1h ranging chop",
+      "category": "clear_avoids",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='clear_avoids' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.01650000012887176,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "low_volume_weekend_001",
+      "scenario_name": "ETH 1h low-volume weekend drift",
+      "category": "clear_avoids",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='clear_avoids' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.004042000000481494,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "breakout_eth_4h_001",
+      "scenario_name": "ETH 4h resistance breakout",
+      "category": "clear_setups",
+      "runs": [
+        {
+          "direction": "LONG",
+          "conviction": 0.75,
+          "sl_price": 4007.52,
+          "tp1_price": 4128.96,
+          "tp2_price": 4169.4400000000005,
+          "position_size_pct": 0.1,
+          "reasoning": "Mock pipeline: category='clear_setups' \u2192 LONG (conviction=0.75)",
+          "latency_ms": 0.0032910002119024284,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "bull_flag_btc_1h_001",
+      "scenario_name": "BTC 1h bull flag breakout",
+      "category": "clear_setups",
+      "runs": [
+        {
+          "direction": "LONG",
+          "conviction": 0.75,
+          "sl_price": 63092.7,
+          "tp1_price": 65004.6,
+          "tp2_price": 65641.90000000001,
+          "position_size_pct": 0.1,
+          "reasoning": "Mock pipeline: category='clear_setups' \u2192 LONG (conviction=0.75)",
+          "latency_ms": 0.0019170001905877143,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "rsi_vs_pattern_btc_1h_001",
+      "scenario_name": "BTC 1h RSI-overbought vs bullish pattern conflict",
+      "category": "conflicting_signals",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='conflicting_signals' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0018750006347545423,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "1h_bull_4h_bear_btc_001",
+      "scenario_name": "BTC 1h bull / 4h bear conflict",
+      "category": "cross_tf_conflicts",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='cross_tf_conflicts' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0014589995771530084,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "extreme_funding_low_liquidity_sol_1h_001",
+      "scenario_name": "SOL 1h extreme funding + low liquidity",
+      "category": "edge_cases",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='edge_cases' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.001207999957841821,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "price_down_oi_building_eth_1h_001",
+      "scenario_name": "ETH 1h price down / OI building accumulation",
+      "category": "flow_divergence",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='flow_divergence' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0014170000213198364,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": false,
+      "action_match": false,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "action 'SKIP' != expected 'LONG'",
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'",
+        "conviction 0.300 below min 0.500"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "price_up_flow_bearish_btc_1h_001",
+      "scenario_name": "BTC 1h price up / flow bearish divergence",
+      "category": "flow_divergence",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='flow_divergence' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0012500004231696948,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BEARISH'"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "post_cpi_surprise_eth_1h_001",
+      "scenario_name": "ETH 1h post-CPI hot print whipsaw",
+      "category": "high_impact_events",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='high_impact_events' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.0012500004231696948,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "pre_fomc_btc_1h_001",
+      "scenario_name": "BTC 1h bull flag \u2014 but FOMC in 2 hours",
+      "category": "high_impact_events",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='high_impact_events' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.001207999957841821,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "quiet_to_volatile_eth_1h_001",
+      "scenario_name": "ETH 1h quiet \u2192 sudden volatility expansion",
+      "category": "regime_transitions",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='regime_transitions' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0012500004231696948,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "trending_to_ranging_btc_1h_001",
+      "scenario_name": "BTC 1h trend exhaustion \u2192 ranging",
+      "category": "regime_transitions",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='regime_transitions' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0012089994925190695,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": true,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "PASS",
+      "failure_reasons": [],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "bear_trap_eth_1h_001",
+      "scenario_name": "ETH 1h bear trap / spring",
+      "category": "trap_setups",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='trap_setups' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.001207999957841821,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": false,
+      "action_match": false,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "action 'SKIP' != expected 'LONG'",
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'",
+        "conviction 0.300 below min 0.500"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "distribution_top_btc_4h_001",
+      "scenario_name": "BTC 4h distribution top \u2014 fake breakout",
+      "category": "trap_setups",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='trap_setups' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0011669999366858974,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BEARISH'"
+      ],
+      "judge_score": null
+    }
+  ],
+  "top_failures": [
+    {
+      "scenario_id": "extreme_funding_low_liquidity_sol_1h_001",
+      "scenario_name": "SOL 1h extreme funding + low liquidity",
+      "category": "edge_cases",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='edge_cases' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.001207999957841821,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "price_down_oi_building_eth_1h_001",
+      "scenario_name": "ETH 1h price down / OI building accumulation",
+      "category": "flow_divergence",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='flow_divergence' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0014170000213198364,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": false,
+      "action_match": false,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "action 'SKIP' != expected 'LONG'",
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'",
+        "conviction 0.300 below min 0.500"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "price_up_flow_bearish_btc_1h_001",
+      "scenario_name": "BTC 1h price up / flow bearish divergence",
+      "category": "flow_divergence",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='flow_divergence' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0012500004231696948,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BEARISH'"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "pre_fomc_btc_1h_001",
+      "scenario_name": "BTC 1h bull flag \u2014 but FOMC in 2 hours",
+      "category": "high_impact_events",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.2,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='high_impact_events' \u2192 SKIP (conviction=0.20)",
+          "latency_ms": 0.001207999957841821,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "bear_trap_eth_1h_001",
+      "scenario_name": "ETH 1h bear trap / spring",
+      "category": "trap_setups",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='trap_setups' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.001207999957841821,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": false,
+      "action_match": false,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "action 'SKIP' != expected 'LONG'",
+        "direction 'SKIP' not consistent with signal_direction 'BULLISH'",
+        "conviction 0.300 below min 0.500"
+      ],
+      "judge_score": null
+    },
+    {
+      "scenario_id": "distribution_top_btc_4h_001",
+      "scenario_name": "BTC 4h distribution top \u2014 fake breakout",
+      "category": "trap_setups",
+      "runs": [
+        {
+          "direction": "SKIP",
+          "conviction": 0.3,
+          "sl_price": null,
+          "tp1_price": null,
+          "tp2_price": null,
+          "position_size_pct": null,
+          "reasoning": "Mock pipeline: category='trap_setups' \u2192 SKIP (conviction=0.30)",
+          "latency_ms": 0.0011669999366858974,
+          "model_id": "mock",
+          "teacher_agreement": null,
+          "conviction_calibration": null
+        }
+      ],
+      "direction_match": false,
+      "conviction_in_range": true,
+      "action_match": true,
+      "consistency_stdev": 0.0,
+      "pass_fail": "FAIL",
+      "failure_reasons": [
+        "direction 'SKIP' not consistent with signal_direction 'BEARISH'"
+      ],
+      "judge_score": null
+    }
+  ],
+  "model_id": "2026.04.2.7.1-alpha.1",
+  "prompt_versions": {
+    "indicator_agent": "3.2",
+    "pattern_agent": "2.1",
+    "trend_agent": "2.1",
+    "conviction_agent": "1.0",
+    "decision_agent": "2.0",
+    "reflection_agent": "1.0"
+  },
+  "duration_seconds": 0.0001
+}

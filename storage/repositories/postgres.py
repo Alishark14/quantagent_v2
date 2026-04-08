@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_reason TEXT,
     conviction_score DOUBLE PRECISION,
     engine_version TEXT,
-    status TEXT NOT NULL DEFAULT 'open'
+    status TEXT NOT NULL DEFAULT 'open',
+    forward_max_r DOUBLE PRECISION
 );
 """
 

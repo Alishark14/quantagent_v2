@@ -43,7 +43,7 @@ class HyperliquidCostModel(ExecutionCostModel):
     orderbook snapshots, and funding rates dynamically.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cache=None) -> None:
         self._fee_tier: int = 0
         self._staking_discount: float = 0.0
         self._referral_discount: float = 0.0
@@ -51,18 +51,28 @@ class HyperliquidCostModel(ExecutionCostModel):
         self._orderbook_cache: dict[str, dict] = {}
         self._funding_cache: dict[str, dict] = {}
         self._last_meta_refresh: datetime | None = None
+        self._cache = cache  # Optional CacheManager
 
     async def refresh(self, adapter) -> None:
         """Refresh fee tier and asset metadata from Hyperliquid APIs."""
         now = datetime.now(timezone.utc)
 
-        # Asset metadata (refresh every 24 hours)
-        if (
+        # Asset metadata (cached 24h via CacheManager or internal timer)
+        needs_meta = (
             self._last_meta_refresh is None
             or (now - self._last_meta_refresh).total_seconds() > 86400
-        ):
+        )
+        if needs_meta:
             try:
-                meta = await adapter.fetch_meta()
+                if self._cache is not None:
+                    from storage.cache import meta_key, TTL_ASSET_META
+                    meta = await self._cache.get_or_fetch(
+                        meta_key("hyperliquid"),
+                        lambda: adapter.fetch_meta(),
+                        ttl=TTL_ASSET_META,
+                    )
+                else:
+                    meta = await adapter.fetch_meta()
                 for asset in meta:
                     sym = asset.get("symbol", "")
                     self._asset_meta[sym] = {
@@ -174,7 +184,17 @@ class HyperliquidCostModel(ExecutionCostModel):
     async def refresh_orderbook(self, adapter, symbol: str) -> None:
         """Refresh orderbook snapshot for slippage estimation."""
         try:
-            book = await adapter.fetch_orderbook(symbol, limit=10)
+            async def _fetch():
+                return await adapter.fetch_orderbook(symbol, limit=10)
+
+            if self._cache is not None:
+                from storage.cache import orderbook_key, TTL_ORDERBOOK
+                book = await self._cache.get_or_fetch(
+                    orderbook_key(symbol), _fetch, ttl=TTL_ORDERBOOK,
+                )
+            else:
+                book = await _fetch()
+
             bids = book.get("bids", [])
             asks = book.get("asks", [])
             self._orderbook_cache[symbol] = {
@@ -190,7 +210,17 @@ class HyperliquidCostModel(ExecutionCostModel):
     async def refresh_funding(self, adapter, symbol: str) -> None:
         """Refresh current funding rate."""
         try:
-            rate = await adapter.get_funding_rate(symbol)
+            async def _fetch():
+                return await adapter.get_funding_rate(symbol)
+
+            if self._cache is not None:
+                from storage.cache import funding_key, TTL_FUNDING
+                rate = await self._cache.get_or_fetch(
+                    funding_key(symbol), _fetch, ttl=TTL_FUNDING,
+                )
+            else:
+                rate = await adapter.get_funding_rate(symbol)
+
             self._funding_cache[symbol] = {
                 "rate": rate or 0,
                 "timestamp": datetime.now(timezone.utc),

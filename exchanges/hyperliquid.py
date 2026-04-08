@@ -194,11 +194,19 @@ class HyperliquidAdapter(ExchangeAdapter):
     # Data methods
     # ------------------------------------------------------------------
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> list[dict]:
+    async def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 100,
+        since: int | None = None,
+    ) -> list[dict]:
         ex_sym = self._to_ccxt_symbol(symbol)
         extra = self._hip3_params(ex_sym)
         try:
-            raw = self._exchange.fetch_ohlcv(ex_sym, timeframe, limit=limit, params=extra)
+            raw = self._exchange.fetch_ohlcv(
+                ex_sym, timeframe, since=since, limit=limit, params=extra
+            )
             return [
                 {
                     "timestamp": candle[0],

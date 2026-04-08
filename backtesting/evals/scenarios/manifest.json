@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "last_validated": "2026-04-08T12:00:00+00:00",
+  "scenarios": [
+    {
+      "id": "chop_btc_1h_001",
+      "name": "BTC 1h ranging chop",
+      "category": "clear_avoids",
+      "path": "clear_avoids/chop_btc_1h_001.json"
+    },
+    {
+      "id": "low_volume_weekend_001",
+      "name": "ETH 1h low-volume weekend drift",
+      "category": "clear_avoids",
+      "path": "clear_avoids/low_volume_weekend_001.json"
+    },
+    {
+      "id": "breakout_eth_4h_001",
+      "name": "ETH 4h resistance breakout",
+      "category": "clear_setups",
+      "path": "clear_setups/breakout_eth_4h_001.json"
+    },
+    {
+      "id": "bull_flag_btc_1h_001",
+      "name": "BTC 1h bull flag breakout",
+      "category": "clear_setups",
+      "path": "clear_setups/bull_flag_btc_1h_001.json"
+    },
+    {
+      "id": "rsi_vs_pattern_btc_1h_001",
+      "name": "BTC 1h RSI-overbought vs bullish pattern conflict",
+      "category": "conflicting_signals",
+      "path": "conflicting_signals/rsi_vs_pattern_btc_1h_001.json"
+    },
+    {
+      "id": "1h_bull_4h_bear_btc_001",
+      "name": "BTC 1h bull / 4h bear conflict",
+      "category": "cross_tf_conflicts",
+      "path": "cross_tf_conflicts/1h_bull_4h_bear_btc_001.json"
+    },
+    {
+      "id": "extreme_funding_low_liquidity_sol_1h_001",
+      "name": "SOL 1h extreme funding + low liquidity",
+      "category": "edge_cases",
+      "path": "edge_cases/extreme_funding_low_liquidity_sol_1h_001.json"
+    },
+    {
+      "id": "price_down_oi_building_eth_1h_001",
+      "name": "ETH 1h price down / OI building accumulation",
+      "category": "flow_divergence",
+      "path": "flow_divergence/price_down_oi_building_eth_1h_001.json"
+    },
+    {
+      "id": "price_up_flow_bearish_btc_1h_001",
+      "name": "BTC 1h price up / flow bearish divergence",
+      "category": "flow_divergence",
+      "path": "flow_divergence/price_up_flow_bearish_btc_1h_001.json"
+    },
+    {
+      "id": "post_cpi_surprise_eth_1h_001",
+      "name": "ETH 1h post-CPI hot print whipsaw",
+      "category": "high_impact_events",
+      "path": "high_impact_events/post_cpi_surprise_eth_1h_001.json"
+    },
+    {
+      "id": "pre_fomc_btc_1h_001",
+      "name": "BTC 1h bull flag \u2014 but FOMC in 2 hours",
+      "category": "high_impact_events",
+      "path": "high_impact_events/pre_fomc_btc_1h_001.json"
+    },
+    {
+      "id": "quiet_to_volatile_eth_1h_001",
+      "name": "ETH 1h quiet \u2192 sudden volatility expansion",
+      "category": "regime_transitions",
+      "path": "regime_transitions/quiet_to_volatile_eth_1h_001.json"
+    },
+    {
+      "id": "trending_to_ranging_btc_1h_001",
+      "name": "BTC 1h trend exhaustion \u2192 ranging",
+      "category": "regime_transitions",
+      "path": "regime_transitions/trending_to_ranging_btc_1h_001.json"
+    },
+    {
+      "id": "bear_trap_eth_1h_001",
+      "name": "ETH 1h bear trap / spring",
+      "category": "trap_setups",
+      "path": "trap_setups/bear_trap_eth_1h_001.json"
+    },
+    {
+      "id": "distribution_top_btc_4h_001",
+      "name": "BTC 4h distribution top \u2014 fake breakout",
+      "category": "trap_setups",
+      "path": "trap_setups/distribution_top_btc_4h_001.json"
+    }
+  ]
+}

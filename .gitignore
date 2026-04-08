@@ -18,6 +18,12 @@ node_modules/
 *.db
 *.sqlite3
 
+# Backtest historical data (large, regeneratable from exchange)
+data/parquet/
+
+# Backtest run outputs
+backtesting/results/
+
 # Logs
 trade_logs/
 *.log

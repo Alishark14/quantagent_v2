@@ -253,6 +253,8 @@ class ClaudeProvider(LLMProvider):
                         "temperature": temperature,
                         "cached_input_tokens": response.cached_input_tokens,
                         "latency_ms": response.latency_ms,
+                        "engine_version": self._get_engine_version(),
+                        "prompt_version": self._get_prompt_version(agent_name),
                     },
                     "tags": ["quantagent", "v2", agent_name],
                 },
@@ -261,3 +263,19 @@ class ClaudeProvider(LLMProvider):
             )
         except Exception as e:
             logger.debug(f"LangSmith trace failed for {agent_name}: {e}")
+
+    @staticmethod
+    def _get_engine_version() -> str:
+        try:
+            from quantagent.version import ENGINE_VERSION
+            return ENGINE_VERSION
+        except ImportError:
+            return "unknown"
+
+    @staticmethod
+    def _get_prompt_version(agent_name: str) -> str:
+        try:
+            from quantagent.version import PROMPT_VERSIONS
+            return PROMPT_VERSIONS.get(agent_name, "unknown")
+        except ImportError:
+            return "unknown"

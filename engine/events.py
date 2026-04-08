@@ -61,11 +61,24 @@ class TradeOpened(Event):
 
 @dataclass
 class TradeClosed(Event):
-    """Emitted when a position has been fully closed."""
+    """Emitted when a position has been fully closed.
+
+    The `trade_id` and entry-side fields are optional for back-compat —
+    the executor's CLOSE_ALL emission doesn't know the trade record id
+    yet. Downstream tracking handlers (e.g. `ForwardMaxRStamper`) that
+    need to look up the trade should fall back to a no-op + warning
+    when `trade_id` is None instead of crashing.
+    """
 
     symbol: str = ""
     pnl: float = 0.0
     exit_reason: str = ""
+    trade_id: str | None = None
+    direction: str | None = None  # "LONG" | "SHORT"
+    entry_price: float | None = None
+    sl_price: float | None = None
+    entry_timestamp_ms: int | None = None
+    timeframe: str | None = None
 
 
 @dataclass
@@ -104,6 +117,58 @@ class MacroUpdated(Event):
     """Emitted when the Macro Manager MCP produces a new regime assessment."""
 
     filepath: str = ""
+
+
+@dataclass
+class VolumeAnomaly(Event):
+    """Emitted by Sentinel when a single-symbol volume anomaly is detected.
+
+    The aggregator (`MacroEventAggregator`) collects these alongside
+    `ExtremeMove` events and escalates to `MacroReassessmentRequired`
+    when 5+ unique symbols fire within a 60-second window.
+
+    `severity` is normalised to [0.0, 1.0] so the aggregator can rank
+    triggers across symbols / event types.
+    """
+
+    symbol: str = ""
+    severity: float = 0.0  # 0.0–1.0
+    detail: str = ""
+
+
+@dataclass
+class ExtremeMove(Event):
+    """Emitted by Sentinel when a price move >N×ATR is detected.
+
+    Companion to `VolumeAnomaly` — both feed the
+    `MacroEventAggregator` swarm-consensus pipeline (§13.2.5).
+    """
+
+    symbol: str = ""
+    severity: float = 0.0  # 0.0–1.0
+    move_pct: float = 0.0
+    detail: str = ""
+
+
+@dataclass
+class MacroReassessmentRequired(Event):
+    """Emitted by `MacroEventAggregator` on swarm consensus.
+
+    Per ARCHITECTURE §13.2.5: when 5+ active Sentinels across DIFFERENT
+    symbols fire `VolumeAnomaly` or `ExtremeMove` within a 60-second
+    window, the aggregator publishes this event. A handler subscribes
+    and triggers the Macro Regime Manager's emergency mode (out of
+    process — the wiring to the MCP runner is infrastructure work for
+    a future task).
+
+    The payload tells the LLM what the swarm is reacting to so the
+    emergency assessment can be calibrated to the observed stress.
+    """
+
+    triggering_symbols: list[str] = field(default_factory=list)
+    anomaly_types: list[str] = field(default_factory=list)
+    severity_scores: list[float] = field(default_factory=list)
+    triggered_at: str = ""  # ISO 8601 UTC, mirrors `timestamp` for downstream JSON
 
 
 @dataclass

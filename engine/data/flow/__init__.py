@@ -18,8 +18,13 @@ logger = logging.getLogger(__name__)
 class FlowAgent:
     """Aggregates flow data from all enabled providers. Code-only, zero LLM cost."""
 
-    def __init__(self, providers: list[FlowProvider] | None = None) -> None:
+    def __init__(
+        self,
+        providers: list[FlowProvider] | None = None,
+        cache=None,
+    ) -> None:
         self._providers: list[FlowProvider] = list(providers) if providers else []
+        self._cache = cache  # Optional CacheManager
 
     def add_provider(self, provider: FlowProvider) -> None:
         """Register an additional flow data provider."""
@@ -29,12 +34,8 @@ class FlowAgent:
     def providers(self) -> list[FlowProvider]:
         return list(self._providers)
 
-    async def fetch_flow(self, symbol: str, adapter: ExchangeAdapter) -> FlowOutput:
-        """Fetch flow data from all providers and merge into FlowOutput.
-
-        Each provider is independently try/excepted — one provider failing
-        does not block others. The merged dict is classified by data richness.
-        """
+    async def _fetch_and_merge(self, symbol: str, adapter: ExchangeAdapter) -> FlowOutput:
+        """Fetch from all providers, merge, classify richness."""
         merged: dict = {}
 
         for provider in self._providers:
@@ -44,7 +45,6 @@ class FlowAgent:
             except Exception as e:
                 logger.warning(f"FlowProvider {provider.name()} failed for {symbol}: {e}")
 
-        # Classify data richness
         has_funding = "funding_rate" in merged
         has_oi = "open_interest" in merged
         if has_funding and has_oi:
@@ -65,3 +65,19 @@ class FlowAgent:
             gex_flip_level=merged.get("gex_flip_level"),
             data_richness=richness,
         )
+
+    async def fetch_flow(self, symbol: str, adapter: ExchangeAdapter) -> FlowOutput:
+        """Fetch flow data with cache-aside pattern (thundering herd safe).
+
+        Flow data is cached for 5 minutes (FLOW_TTL=300).
+        Uses get_or_fetch() for thundering herd protection.
+        """
+        if self._cache is not None:
+            from storage.cache import flow_key, TTL_FLOW
+            return await self._cache.get_or_fetch(
+                flow_key(symbol),
+                lambda: self._fetch_and_merge(symbol, adapter),
+                ttl=TTL_FLOW,
+            )
+
+        return await self._fetch_and_merge(symbol, adapter)

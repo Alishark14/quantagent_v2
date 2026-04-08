@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantagent"
-version = "2026.4.2.0.0a1"
+version = "2026.4.2.7.1a1"
 description = "QuantAgent v2 — Modular AI-powered trading engine"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,6 +24,7 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "pandas>=2.1",
+    "polars>=1.0",
     "cachetools>=5.3",
     "pyjwt>=2.8",
     "cryptography>=42.0",
@@ -53,6 +54,7 @@ include = [
     "distribution*",
     "mcp*",
     "api*",
+    "backtesting*",
     "quantagent*",
 ]
 

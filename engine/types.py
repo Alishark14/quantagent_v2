@@ -83,7 +83,13 @@ class SignalOutput:
 
 @dataclass
 class ConvictionOutput:
-    """Output from the ConvictionAgent meta-evaluator."""
+    """Output from the ConvictionAgent meta-evaluator.
+
+    The macro_* fields are populated by ConvictionAgent when a non-expired
+    `macro_regime.json` is loaded at cycle start (ARCHITECTURE §13.2.4).
+    They default to the no-overlay state so existing call sites that
+    don't care about the macro layer continue to work unchanged.
+    """
 
     conviction_score: float  # 0.0 to 1.0
     direction: str  # "LONG" | "SHORT" | "SKIP"
@@ -95,6 +101,10 @@ class ConvictionOutput:
     factual_weight: float
     subjective_weight: float
     raw_output: str  # full LLM response for data moat
+    macro_regime: str = "NEUTRAL"  # "RISK_ON" | "RISK_OFF" | "NEUTRAL"
+    macro_threshold_boost: float = 0.0  # added to downstream conviction threshold
+    macro_position_size_multiplier: float = 1.0  # passed to DecisionAgent for sizing
+    macro_blackout_reason: str | None = None  # set when conviction is forced to 0
 
     def to_dict(self) -> dict:
         return asdict(self)

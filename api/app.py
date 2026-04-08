@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from quantagent.version import API_VERSION, ENGINE_VERSION
 from storage.repositories import get_repositories
 from tracking.health import HealthTracker
 
@@ -45,7 +46,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="QuantAgent API",
         description="AI-powered trading engine API",
-        version="2026.04.2.0.0-alpha.1",
+        version=f"{ENGINE_VERSION} ({API_VERSION})",
         lifespan=lifespan,
     )
 

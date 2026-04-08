@@ -140,7 +140,7 @@ class TestSQLiteSchemaParity:
             "id", "user_id", "bot_id", "symbol", "timeframe", "direction",
             "entry_price", "exit_price", "size", "pnl", "r_multiple",
             "entry_time", "exit_time", "exit_reason", "conviction_score",
-            "engine_version", "status",
+            "engine_version", "status", "forward_max_r",
         }
         assert columns == expected
 

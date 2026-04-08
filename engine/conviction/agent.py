@@ -6,6 +6,28 @@ from the Signal Layer and produces a continuous 0-1 conviction score.
 
 On any parse failure, returns ConvictionOutput with score=0.0, direction="SKIP".
 SKIP is always safe.
+
+**Macro regime overlay (ARCHITECTURE §13.2.4):**
+
+At the start of every `evaluate()` call the agent attempts to load
+`macro_regime.json` from `self._macro_regime_path` (default: project
+root). If the file exists AND is non-expired:
+
+  * If the current time falls inside any `blackout_window`, the agent
+    short-circuits the LLM call entirely and returns
+    `conviction_score=0.0, direction="SKIP"` with a structured
+    "Blackout window active: {reason}" reasoning. This is the
+    §13.2.4 "don't open new positions" contract.
+  * Otherwise, if `regime != "NEUTRAL"`, the agent injects a regime
+    context paragraph into the LLM user prompt, applies the
+    `conviction_threshold_boost` to the parsed conviction score
+    (subtracts the boost so the trade only fires if intrinsic
+    confidence > threshold + boost), and stamps the
+    `position_size_multiplier` onto the output for DecisionAgent
+    to apply when sizing.
+
+A missing OR expired `macro_regime.json` is the safe default: the
+agent proceeds with no overlay applied and logs an info message.
 """
 
 from __future__ import annotations
@@ -13,6 +35,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 
 from engine.conviction.prompts.conviction_v1 import (
     PROMPT_VERSION,
@@ -22,6 +46,7 @@ from engine.conviction.prompts.conviction_v1 import (
 from engine.data.charts import generate_grounding_header
 from engine.types import ConvictionOutput, MarketData, SignalOutput
 from llm.base import LLMProvider, LLMResponse
+from mcp.macro_regime.agent import MacroRegime, load_macro_regime
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +67,8 @@ _SAFE_DEFAULT = ConvictionOutput(
     raw_output="",
 )
 
+_DEFAULT_MACRO_REGIME_PATH = Path("macro_regime.json")
+
 
 class ConvictionAgent:
     """Meta-evaluator that scores signal quality and coherence.
@@ -50,8 +77,15 @@ class ConvictionAgent:
     and produces a ConvictionOutput with conviction score, regime, and reasoning.
     """
 
-    def __init__(self, llm_provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        llm_provider: LLMProvider,
+        macro_regime_path: Path | str = _DEFAULT_MACRO_REGIME_PATH,
+        clock=None,
+    ) -> None:
         self._llm = llm_provider
+        self._macro_regime_path = Path(macro_regime_path)
+        self._clock = clock or (lambda: datetime.now(tz=timezone.utc))
 
     async def evaluate(
         self,
@@ -69,6 +103,16 @@ class ConvictionAgent:
         Returns:
             ConvictionOutput. On any failure, returns safe default (score=0.0, SKIP).
         """
+        # ---- Macro overlay (§13.2.4) — load + blackout check FIRST ----
+        macro = self._load_active_macro_regime()
+        blackout = self._active_blackout(macro)
+        if blackout is not None:
+            logger.info(
+                f"ConvictionAgent: blackout window active "
+                f"({blackout.reason}), forcing conviction=0.0 for {market_data.symbol}"
+            )
+            return _blackout_skip(blackout.reason, macro)
+
         try:
             grounding = generate_grounding_header(
                 symbol=market_data.symbol,
@@ -117,6 +161,11 @@ class ConvictionAgent:
                 memory_context=memory_context,
             )
 
+            # Append macro context as additional input to the LLM (NOT a hard
+            # override on direction — the LLM sees it as one more signal).
+            if macro is not None and macro.regime != "NEUTRAL":
+                user = user + "\n\n" + _format_macro_context(macro)
+
             response = await self._llm.generate_text(
                 system_prompt=system,
                 user_prompt=user,
@@ -126,11 +175,74 @@ class ConvictionAgent:
                 cache_system_prompt=True,
             )
 
-            return self._parse_response(response)
+            output = self._parse_response(response)
+            return self._apply_macro_overlay(output, macro)
 
         except Exception:
             logger.exception("ConvictionAgent: evaluation failed")
             return _SAFE_DEFAULT
+
+    # ------------------------------------------------------------------
+    # Macro regime helpers
+    # ------------------------------------------------------------------
+
+    def _load_active_macro_regime(self) -> MacroRegime | None:
+        """Load `macro_regime.json` and discard if missing or expired.
+
+        A missing or unparseable file is the safe default — the cycle
+        proceeds with no overlay applied. Logged at INFO level so the
+        first cycle after a deploy makes it obvious whether the file
+        was found.
+        """
+        macro = load_macro_regime(self._macro_regime_path)
+        if macro is None:
+            logger.info(
+                f"ConvictionAgent: no macro_regime.json at "
+                f"{self._macro_regime_path} — proceeding without overlay"
+            )
+            return None
+        if macro.error is not None:
+            logger.info(
+                f"ConvictionAgent: macro_regime.json carries error "
+                f"{macro.error!r} — proceeding without overlay"
+            )
+            return None
+        if _is_expired(macro, self._clock()):
+            logger.info(
+                f"ConvictionAgent: macro_regime.json expired at "
+                f"{macro.expires} — proceeding without overlay"
+            )
+            return None
+        return macro
+
+    def _active_blackout(self, macro: MacroRegime | None):
+        """Return the first blackout window covering `now`, or None."""
+        if macro is None:
+            return None
+        now = self._clock()
+        for window in macro.blackout_windows:
+            if window.contains(now):
+                return window
+        return None
+
+    def _apply_macro_overlay(
+        self, output: ConvictionOutput, macro: MacroRegime | None
+    ) -> ConvictionOutput:
+        """Stamp the macro adjustments onto a parsed ConvictionOutput.
+
+        Score itself is preserved (the LLM's actual judgment lands in
+        the data moat unmutated). The boost + multiplier are stamped
+        as new fields and read by DecisionAgent / threshold logic
+        downstream.
+        """
+        if macro is None:
+            return output
+        output.macro_regime = macro.regime
+        output.macro_threshold_boost = macro.adjustments.conviction_threshold_boost
+        output.macro_position_size_multiplier = (
+            macro.adjustments.position_size_multiplier
+        )
+        return output
 
     def _build_signal_map(self, signals: list[SignalOutput]) -> dict[str, dict]:
         """Map agent_name -> formatted signal dict for prompt injection."""
@@ -251,4 +363,79 @@ def _safe_default_with_raw(raw: str) -> ConvictionOutput:
         factual_weight=0.5,
         subjective_weight=0.5,
         raw_output=raw,
+    )
+
+
+def _blackout_skip(reason: str, macro: MacroRegime | None) -> ConvictionOutput:
+    """Return a forced-SKIP output when a blackout window is active.
+
+    The conviction_score is hard-zero, the direction is SKIP, and the
+    `macro_blackout_reason` field carries the event name (e.g.
+    `"FOMC_ANNOUNCEMENT"`) so downstream logging / data moat capture
+    can trace why the cycle was skipped without re-loading the macro
+    file.
+    """
+    multiplier = 1.0
+    boost = 0.0
+    regime_label = "NEUTRAL"
+    if macro is not None:
+        multiplier = macro.adjustments.position_size_multiplier
+        boost = macro.adjustments.conviction_threshold_boost
+        regime_label = macro.regime
+    return ConvictionOutput(
+        conviction_score=0.0,
+        direction="SKIP",
+        regime="RANGING",
+        regime_confidence=0.0,
+        signal_quality="LOW",
+        contradictions=[f"Blackout window active: {reason}"],
+        reasoning=(
+            f"Blackout window active: {reason}. "
+            f"No new entries permitted."
+        ),
+        factual_weight=1.0,
+        subjective_weight=0.0,
+        raw_output="",
+        macro_regime=regime_label,
+        macro_threshold_boost=boost,
+        macro_position_size_multiplier=multiplier,
+        macro_blackout_reason=reason,
+    )
+
+
+def _is_expired(macro: MacroRegime, now: datetime) -> bool:
+    """Compare `macro.expires` against `now`. Treat unparseable as expired."""
+    if not macro.expires:
+        return False  # no expiry → assume valid
+    try:
+        expires_dt = datetime.fromisoformat(macro.expires.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if expires_dt.tzinfo is None:
+        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now > expires_dt
+
+
+def _format_macro_context(macro: MacroRegime) -> str:
+    """Render the non-NEUTRAL macro overlay as additional LLM context.
+
+    The LLM sees this as one more signal — NOT as a hard override on
+    direction. The blackout case is handled before the LLM is called,
+    so this string only renders for active RISK_ON / RISK_OFF regimes.
+    """
+    avoid = ", ".join(macro.adjustments.avoid_assets) or "(none)"
+    prefer = ", ".join(macro.adjustments.prefer_assets) or "(none)"
+    return (
+        "## MACRO REGIME OVERLAY\n"
+        f"Current macro regime: {macro.regime} "
+        f"(confidence={macro.confidence:.2f})\n"
+        f"Reasoning: {macro.reasoning}\n"
+        f"Conviction threshold boost: +{macro.adjustments.conviction_threshold_boost:.2f}\n"
+        f"Position size multiplier: ×{macro.adjustments.position_size_multiplier:.2f}\n"
+        f"Avoid assets: {avoid}\n"
+        f"Prefer assets: {prefer}\n"
+        "Treat this as ONE additional input — do NOT override your "
+        "direction call solely on the macro regime."
     )

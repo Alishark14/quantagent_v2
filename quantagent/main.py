@@ -2,6 +2,7 @@
 
 Commands:
     python -m quantagent run       — Start BotRunner + FastAPI together
+    python -m quantagent run --shadow — Same runner, sim exchange + shadow DB
     python -m quantagent migrate   — Run Alembic migrations (upgrade to head)
     python -m quantagent seed      — Seed dev database with test data
     python -m quantagent           — Show help
@@ -34,11 +35,32 @@ async def _run_server() -> None:
     import uvicorn
 
     from api.app import create_app
+    from backtesting.shadow import (
+        ensure_shadow_db,
+        is_shadow_mode,
+    )
     from engine.bot_manager import BotManager
     from engine.events import create_event_bus
     from storage.repositories import get_repositories
 
     logger = logging.getLogger("quantagent")
+
+    from quantagent.version import ENGINE_VERSION
+    logger.info(f"QuantAgent {ENGINE_VERSION} starting...")
+
+    # ── Shadow-mode setup (if active) ──
+    # CLI parsing in main() has already flipped QUANTAGENT_SHADOW and
+    # mutated DATABASE_URL via configure_shadow(). All we need to do
+    # here is ensure the shadow DB exists and migrate it before any
+    # repository connection is made.
+    if is_shadow_mode():
+        logger.warning(
+            "⚠️ SHADOW MODE — no real trades will be placed. "
+            "All writes go to the shadow database."
+        )
+        shadow_url = os.environ.get("DATABASE_URL", "")
+        if shadow_url:
+            await ensure_shadow_db(shadow_url)
 
     # ── Initialize infrastructure ──
     logger.info("Initializing infrastructure...")
@@ -167,14 +189,34 @@ def main() -> None:
     """CLI entry point."""
     args = sys.argv[1:]
 
+    # ``--shadow`` is global: it applies to any subcommand and is
+    # stripped from argv before subcommand dispatch so the existing
+    # positional logic keeps working.
+    shadow_requested = "--shadow" in args
+    if shadow_requested:
+        args = [a for a in args if a != "--shadow"]
+        from backtesting.shadow import configure_shadow
+
+        # Build a tiny config holder so configure_shadow() has something
+        # to mutate. The runtime config in this CLI is env-var based, so
+        # the env-var side-effects are what actually matter — but we
+        # capture the snapshot for log clarity.
+        class _RuntimeConfig:
+            database_url = os.environ.get("DATABASE_URL", "")
+            shadow_mode = False
+            use_simulated_exchange = False
+
+        configure_shadow(_RuntimeConfig)
+
     if not args or args[0] in ("--help", "-h"):
         print("QuantAgent v2 — AI-powered trading engine")
         print()
         print("Usage:")
-        print("  python -m quantagent run       Start BotRunner + API server")
-        print("  python -m quantagent migrate   Run database migrations (Alembic)")
-        print("  python -m quantagent seed      Seed dev database with test data")
-        print("  python -m quantagent --help    Show this help")
+        print("  python -m quantagent run            Start BotRunner + API server")
+        print("  python -m quantagent run --shadow   Same runner, sim exchange + shadow DB")
+        print("  python -m quantagent migrate        Run database migrations (Alembic)")
+        print("  python -m quantagent seed           Seed dev database with test data")
+        print("  python -m quantagent --help         Show this help")
         return
 
     if args[0] == "run":

@@ -1,0 +1,35 @@
+[Unit]
+Description=QuantAgent v2 Trading Engine
+After=network.target postgresql.service redis.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=quantagent
+Group=quantagent
+WorkingDirectory=/opt/quantagent
+EnvironmentFile=/opt/quantagent/.env
+ExecStart=/opt/quantagent/.venv/bin/python -m quantagent run
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=quantagent
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/quantagent /tmp/quantagent
+PrivateTmp=false
+
+# Graceful shutdown (SIGTERM → runner.stop())
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

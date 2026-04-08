@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 
 from api.dependencies import get_bot_repo, get_health_tracker
 from api.schemas import HealthResponse
+from quantagent.version import ENGINE_VERSION
 from storage.repositories.base import BotRepository
 from tracking.health import HealthTracker
 
@@ -44,6 +45,7 @@ async def get_health(
 
     return HealthResponse(
         status="healthy" if summary["error_count"] == 0 else "degraded",
+        engine_version=ENGINE_VERSION,
         uptime_seconds=summary["uptime_seconds"],
         total_events=summary["total_events"],
         event_counts=summary["event_counts"],

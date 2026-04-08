@@ -123,6 +123,7 @@ class HealthResponse(BaseModel):
     """System health snapshot."""
 
     status: str
+    engine_version: str
     uptime_seconds: float
     total_events: int
     event_counts: dict[str, int]

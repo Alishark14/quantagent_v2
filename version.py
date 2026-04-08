@@ -1,19 +1,10 @@
-"""QuantAgent v2 version metadata and cost tracking."""
+"""Re-export from quantagent.version (single source of truth)."""
 
-ENGINE_VERSION = "2026.04.2.0.0-alpha.1"
-API_VERSION = "v1"
+from quantagent.version import (
+    API_VERSION,
+    ENGINE_VERSION,
+    ML_MODEL_VERSIONS,
+    PROMPT_VERSIONS,
+)
 
-PROMPT_VERSIONS: dict[str, str] = {
-    "indicator_agent": "1.0",
-    "pattern_agent": "1.0",
-    "trend_agent": "1.0",
-    "conviction_agent": "1.0",
-    "decision_agent": "1.0",
-    "reflection_agent": "1.0",
-}
-
-ML_MODEL_VERSIONS: dict[str, str | None] = {
-    "direction_model": None,
-    "regime_model": None,
-    "anomaly_detector": None,
-}
+__all__ = ["ENGINE_VERSION", "API_VERSION", "PROMPT_VERSIONS", "ML_MODEL_VERSIONS"]

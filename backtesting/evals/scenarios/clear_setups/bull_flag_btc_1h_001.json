@@ -1,0 +1,542 @@
+{
+  "id": "bull_flag_btc_1h_001",
+  "name": "BTC 1h bull flag breakout",
+  "category": "clear_setups",
+  "version": 1,
+  "created_at": "2026-04-07T12:00:00+00:00",
+  "last_validated": "2026-04-07T12:00:00+00:00",
+  "inputs": {
+    "symbol": "BTC-USDC",
+    "timeframe": "1h",
+    "ohlcv": [
+      {
+        "timestamp": 1705000000000,
+        "open": 60000,
+        "high": 60000.1,
+        "low": 59999.9,
+        "close": 60000,
+        "volume": 1200
+      },
+      {
+        "timestamp": 1705003600000,
+        "open": 60000,
+        "high": 60120.1,
+        "low": 59959.9,
+        "close": 60080,
+        "volume": 1210
+      },
+      {
+        "timestamp": 1705007200000,
+        "open": 60080,
+        "high": 60200.1,
+        "low": 60039.9,
+        "close": 60160,
+        "volume": 1220
+      },
+      {
+        "timestamp": 1705010800000,
+        "open": 60160,
+        "high": 60280.1,
+        "low": 60119.9,
+        "close": 60240,
+        "volume": 1230
+      },
+      {
+        "timestamp": 1705014400000,
+        "open": 60240,
+        "high": 60360.1,
+        "low": 60199.9,
+        "close": 60320,
+        "volume": 1240
+      },
+      {
+        "timestamp": 1705018000000,
+        "open": 60320,
+        "high": 60440.1,
+        "low": 60279.9,
+        "close": 60400,
+        "volume": 1250
+      },
+      {
+        "timestamp": 1705021600000,
+        "open": 60400,
+        "high": 60520.1,
+        "low": 60359.9,
+        "close": 60480,
+        "volume": 1260
+      },
+      {
+        "timestamp": 1705025200000,
+        "open": 60480,
+        "high": 60600.1,
+        "low": 60439.9,
+        "close": 60560,
+        "volume": 1270
+      },
+      {
+        "timestamp": 1705028800000,
+        "open": 60560,
+        "high": 60680.1,
+        "low": 60519.9,
+        "close": 60640,
+        "volume": 1280
+      },
+      {
+        "timestamp": 1705032400000,
+        "open": 60640,
+        "high": 60760.1,
+        "low": 60599.9,
+        "close": 60720,
+        "volume": 1290
+      },
+      {
+        "timestamp": 1705036000000,
+        "open": 60720,
+        "high": 60840.1,
+        "low": 60679.9,
+        "close": 60800,
+        "volume": 1300
+      },
+      {
+        "timestamp": 1705039600000,
+        "open": 60800,
+        "high": 60920.1,
+        "low": 60759.9,
+        "close": 60880,
+        "volume": 1310
+      },
+      {
+        "timestamp": 1705043200000,
+        "open": 60880,
+        "high": 61000.1,
+        "low": 60839.9,
+        "close": 60960,
+        "volume": 1320
+      },
+      {
+        "timestamp": 1705046800000,
+        "open": 60960,
+        "high": 61080.1,
+        "low": 60919.9,
+        "close": 61040,
+        "volume": 1330
+      },
+      {
+        "timestamp": 1705050400000,
+        "open": 61040,
+        "high": 61160.1,
+        "low": 60999.9,
+        "close": 61120,
+        "volume": 1340
+      },
+      {
+        "timestamp": 1705054000000,
+        "open": 61120,
+        "high": 61240.1,
+        "low": 61079.9,
+        "close": 61200,
+        "volume": 1350
+      },
+      {
+        "timestamp": 1705057600000,
+        "open": 61200,
+        "high": 61320.1,
+        "low": 61159.9,
+        "close": 61280,
+        "volume": 1360
+      },
+      {
+        "timestamp": 1705061200000,
+        "open": 61280,
+        "high": 61400.1,
+        "low": 61239.9,
+        "close": 61360,
+        "volume": 1370
+      },
+      {
+        "timestamp": 1705064800000,
+        "open": 61360,
+        "high": 61480.1,
+        "low": 61319.9,
+        "close": 61440,
+        "volume": 1380
+      },
+      {
+        "timestamp": 1705068400000,
+        "open": 61440,
+        "high": 61560.1,
+        "low": 61399.9,
+        "close": 61520,
+        "volume": 1390
+      },
+      {
+        "timestamp": 1705072000000,
+        "open": 61520,
+        "high": 61640.1,
+        "low": 61479.9,
+        "close": 61600,
+        "volume": 1400
+      },
+      {
+        "timestamp": 1705075600000,
+        "open": 61600,
+        "high": 61720.1,
+        "low": 61559.9,
+        "close": 61680,
+        "volume": 1410
+      },
+      {
+        "timestamp": 1705079200000,
+        "open": 61680,
+        "high": 61800.1,
+        "low": 61639.9,
+        "close": 61760,
+        "volume": 1420
+      },
+      {
+        "timestamp": 1705082800000,
+        "open": 61760,
+        "high": 61880.1,
+        "low": 61719.9,
+        "close": 61840,
+        "volume": 1430
+      },
+      {
+        "timestamp": 1705086400000,
+        "open": 61840,
+        "high": 61960.1,
+        "low": 61799.9,
+        "close": 61920,
+        "volume": 1440
+      },
+      {
+        "timestamp": 1705090000000,
+        "open": 61920,
+        "high": 62040.1,
+        "low": 61879.9,
+        "close": 62000,
+        "volume": 1450
+      },
+      {
+        "timestamp": 1705093600000,
+        "open": 62000,
+        "high": 62120.1,
+        "low": 61959.9,
+        "close": 62080,
+        "volume": 1460
+      },
+      {
+        "timestamp": 1705097200000,
+        "open": 62080,
+        "high": 62200.1,
+        "low": 62039.9,
+        "close": 62160,
+        "volume": 1470
+      },
+      {
+        "timestamp": 1705100800000,
+        "open": 62160,
+        "high": 62280.1,
+        "low": 62119.9,
+        "close": 62240,
+        "volume": 1480
+      },
+      {
+        "timestamp": 1705104400000,
+        "open": 62240,
+        "high": 62360.1,
+        "low": 62199.9,
+        "close": 62320,
+        "volume": 1490
+      },
+      {
+        "timestamp": 1705108000000,
+        "open": 62320,
+        "high": 62320.1,
+        "low": 62319.9,
+        "close": 62320,
+        "volume": 600
+      },
+      {
+        "timestamp": 1705111600000,
+        "open": 62320,
+        "high": 62337.6,
+        "low": 62267.4,
+        "close": 62285,
+        "volume": 605
+      },
+      {
+        "timestamp": 1705115200000,
+        "open": 62285,
+        "high": 62302.6,
+        "low": 62232.4,
+        "close": 62250,
+        "volume": 610
+      },
+      {
+        "timestamp": 1705118800000,
+        "open": 62250,
+        "high": 62267.6,
+        "low": 62197.4,
+        "close": 62215,
+        "volume": 615
+      },
+      {
+        "timestamp": 1705122400000,
+        "open": 62215,
+        "high": 62342.6,
+        "low": 62172.4,
+        "close": 62300,
+        "volume": 620
+      },
+      {
+        "timestamp": 1705126000000,
+        "open": 62300,
+        "high": 62317.6,
+        "low": 62247.4,
+        "close": 62265,
+        "volume": 625
+      },
+      {
+        "timestamp": 1705129600000,
+        "open": 62265,
+        "high": 62282.6,
+        "low": 62212.4,
+        "close": 62230,
+        "volume": 630
+      },
+      {
+        "timestamp": 1705133200000,
+        "open": 62230,
+        "high": 62247.6,
+        "low": 62177.4,
+        "close": 62195,
+        "volume": 635
+      },
+      {
+        "timestamp": 1705136800000,
+        "open": 62195,
+        "high": 62322.6,
+        "low": 62152.4,
+        "close": 62280,
+        "volume": 640
+      },
+      {
+        "timestamp": 1705140400000,
+        "open": 62280,
+        "high": 62297.6,
+        "low": 62227.4,
+        "close": 62245,
+        "volume": 645
+      },
+      {
+        "timestamp": 1705144000000,
+        "open": 62245,
+        "high": 62262.6,
+        "low": 62192.4,
+        "close": 62210,
+        "volume": 650
+      },
+      {
+        "timestamp": 1705147600000,
+        "open": 62210,
+        "high": 62227.6,
+        "low": 62157.4,
+        "close": 62175,
+        "volume": 655
+      },
+      {
+        "timestamp": 1705151200000,
+        "open": 62175,
+        "high": 62302.6,
+        "low": 62132.4,
+        "close": 62260,
+        "volume": 660
+      },
+      {
+        "timestamp": 1705154800000,
+        "open": 62260,
+        "high": 62277.6,
+        "low": 62207.4,
+        "close": 62225,
+        "volume": 665
+      },
+      {
+        "timestamp": 1705158400000,
+        "open": 62225,
+        "high": 62242.6,
+        "low": 62172.4,
+        "close": 62190,
+        "volume": 670
+      },
+      {
+        "timestamp": 1705162000000,
+        "open": 62190,
+        "high": 62190.1,
+        "low": 62189.9,
+        "close": 62190,
+        "volume": 2400
+      },
+      {
+        "timestamp": 1705165600000,
+        "open": 62190,
+        "high": 62355.1,
+        "low": 62134.9,
+        "close": 62300,
+        "volume": 2370
+      },
+      {
+        "timestamp": 1705169200000,
+        "open": 62300,
+        "high": 62465.1,
+        "low": 62244.9,
+        "close": 62410,
+        "volume": 2340
+      },
+      {
+        "timestamp": 1705172800000,
+        "open": 62410,
+        "high": 62575.1,
+        "low": 62354.9,
+        "close": 62520,
+        "volume": 2310
+      },
+      {
+        "timestamp": 1705176400000,
+        "open": 62520,
+        "high": 62685.1,
+        "low": 62464.9,
+        "close": 62630,
+        "volume": 2280
+      },
+      {
+        "timestamp": 1705180000000,
+        "open": 62630,
+        "high": 62795.1,
+        "low": 62574.9,
+        "close": 62740,
+        "volume": 2250
+      },
+      {
+        "timestamp": 1705183600000,
+        "open": 62740,
+        "high": 62905.1,
+        "low": 62684.9,
+        "close": 62850,
+        "volume": 2220
+      },
+      {
+        "timestamp": 1705187200000,
+        "open": 62850,
+        "high": 63015.1,
+        "low": 62794.9,
+        "close": 62960,
+        "volume": 2190
+      },
+      {
+        "timestamp": 1705190800000,
+        "open": 62960,
+        "high": 63125.1,
+        "low": 62904.9,
+        "close": 63070,
+        "volume": 2160
+      },
+      {
+        "timestamp": 1705194400000,
+        "open": 63070,
+        "high": 63235.1,
+        "low": 63014.9,
+        "close": 63180,
+        "volume": 2130
+      },
+      {
+        "timestamp": 1705198000000,
+        "open": 63180,
+        "high": 63345.1,
+        "low": 63124.9,
+        "close": 63290,
+        "volume": 2100
+      },
+      {
+        "timestamp": 1705201600000,
+        "open": 63290,
+        "high": 63455.1,
+        "low": 63234.9,
+        "close": 63400,
+        "volume": 2070
+      },
+      {
+        "timestamp": 1705205200000,
+        "open": 63400,
+        "high": 63565.1,
+        "low": 63344.9,
+        "close": 63510,
+        "volume": 2040
+      },
+      {
+        "timestamp": 1705208800000,
+        "open": 63510,
+        "high": 63675.1,
+        "low": 63454.9,
+        "close": 63620,
+        "volume": 2010
+      },
+      {
+        "timestamp": 1705212400000,
+        "open": 63620,
+        "high": 63785.1,
+        "low": 63564.9,
+        "close": 63730,
+        "volume": 1980
+      }
+    ],
+    "indicators": {
+      "rsi": 62.4,
+      "macd": {
+        "macd": 78.2,
+        "signal": 65.1,
+        "histogram": 13.1
+      },
+      "atr": 145.0,
+      "adx": 28.5,
+      "stochastic": {
+        "k": 71.2,
+        "d": 65.3,
+        "zone": "neutral"
+      },
+      "williams_r": -28.5,
+      "bollinger_bands": {
+        "upper": 63100,
+        "middle": 62200,
+        "lower": 61300
+      },
+      "volume_ma": {
+        "ratio": 1.8
+      },
+      "volatility_percentile": 55.0
+    },
+    "flow_data": {
+      "funding_rate": 8e-05,
+      "oi_change_4h": 0.04,
+      "data_richness": "PARTIAL"
+    },
+    "regime_context": "trending",
+    "timestamp": "2026-04-07T12:00:00+00:00"
+  },
+  "expected": {
+    "signal_direction": "BULLISH",
+    "signal_confidence_min": 0.6,
+    "conviction_min": 0.7,
+    "expected_action": "LONG",
+    "key_features_to_mention": [
+      "bull flag",
+      "breakout",
+      "trend continuation"
+    ],
+    "notes": "Clean bull flag breakout with rising volume on the breakout bars and supportive MACD histogram. ADX > 25 confirms trend strength. Should be a high-conviction long."
+  },
+  "metadata": {
+    "hand_labeled": true,
+    "source": "starter_scenario"
+  }
+}

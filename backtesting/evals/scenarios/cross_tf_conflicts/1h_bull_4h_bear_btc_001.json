@@ -1,0 +1,511 @@
+{
+  "id": "1h_bull_4h_bear_btc_001",
+  "name": "BTC 1h bull / 4h bear conflict",
+  "category": "cross_tf_conflicts",
+  "version": 1,
+  "created_at": "2026-04-08T12:00:00+00:00",
+  "last_validated": "2026-04-08T12:00:00+00:00",
+  "inputs": {
+    "symbol": "BTC-USDC",
+    "timeframe": "1h",
+    "ohlcv": [
+      {
+        "timestamp": 1705000000000,
+        "open": 63500.0,
+        "high": 63500.1,
+        "low": 63499.9,
+        "close": 63500.0,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705003600000,
+        "open": 63500.0,
+        "high": 63549.446,
+        "low": 63481.3952,
+        "close": 63530.8413,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705007200000,
+        "open": 63530.8413,
+        "high": 63578.8118,
+        "low": 63512.7898,
+        "close": 63560.7603,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705010800000,
+        "open": 63560.7603,
+        "high": 63606.0127,
+        "low": 63543.7282,
+        "close": 63588.9806,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705014400000,
+        "open": 63588.9806,
+        "high": 63630.7014,
+        "low": 63573.2728,
+        "close": 63614.9936,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705018000000,
+        "open": 63614.9936,
+        "high": 63652.927,
+        "low": 63600.7061,
+        "close": 63638.6395,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705021600000,
+        "open": 63638.6395,
+        "high": 63673.1274,
+        "low": 63625.644,
+        "close": 63660.1319,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705025200000,
+        "open": 63660.1319,
+        "high": 63692.0605,
+        "low": 63648.0962,
+        "close": 63680.0248,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705028800000,
+        "open": 63680.0248,
+        "high": 63710.6841,
+        "low": 63668.4651,
+        "close": 63699.1244,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705032400000,
+        "open": 63699.1244,
+        "high": 63730.0049,
+        "low": 63687.4817,
+        "close": 63718.3622,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705036000000,
+        "open": 63718.3622,
+        "high": 63750.9194,
+        "low": 63706.0907,
+        "close": 63738.648,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705039600000,
+        "open": 63738.648,
+        "high": 63774.0728,
+        "low": 63725.3012,
+        "close": 63760.726,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705043200000,
+        "open": 63760.726,
+        "high": 63799.7565,
+        "low": 63746.027,
+        "close": 63785.0575,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705046800000,
+        "open": 63785.0575,
+        "high": 63827.8626,
+        "low": 63768.9431,
+        "close": 63811.7482,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705050400000,
+        "open": 63811.7482,
+        "high": 63857.9007,
+        "low": 63794.3785,
+        "close": 63840.531,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705054000000,
+        "open": 63840.531,
+        "high": 63889.0754,
+        "low": 63822.2643,
+        "close": 63870.8088,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705057600000,
+        "open": 63870.8088,
+        "high": 63920.4119,
+        "low": 63852.1451,
+        "close": 63901.7482,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705061200000,
+        "open": 63901.7482,
+        "high": 63950.9098,
+        "low": 63883.2502,
+        "close": 63932.4117,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705064800000,
+        "open": 63932.4117,
+        "high": 63979.701,
+        "low": 63914.6157,
+        "close": 63961.905,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705068400000,
+        "open": 63961.905,
+        "high": 64006.1871,
+        "low": 63945.2368,
+        "close": 63989.5188,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705072000000,
+        "open": 63989.5188,
+        "high": 63993.2188,
+        "low": 63979.8188,
+        "close": 63983.5188,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705075600000,
+        "open": 63983.5188,
+        "high": 63983.7669,
+        "low": 63983.0238,
+        "close": 63983.2719,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705079200000,
+        "open": 63983.2719,
+        "high": 63989.9281,
+        "low": 63980.7133,
+        "close": 63987.3696,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705082800000,
+        "open": 63987.3696,
+        "high": 63997.0215,
+        "low": 63983.6876,
+        "close": 63993.3395,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705086400000,
+        "open": 63993.3395,
+        "high": 64001.298,
+        "low": 63990.2926,
+        "close": 63998.2511,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705090000000,
+        "open": 63998.2511,
+        "high": 64000.2417,
+        "low": 63997.4421,
+        "close": 63999.4327,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705093600000,
+        "open": 63999.4327,
+        "high": 64002.1167,
+        "low": 63992.4422,
+        "close": 63995.1262,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705097200000,
+        "open": 63995.1262,
+        "high": 64001.3518,
+        "low": 63978.6911,
+        "close": 63984.9168,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705100800000,
+        "open": 63984.9168,
+        "high": 63994.0657,
+        "low": 63960.6862,
+        "close": 63969.8351,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705104400000,
+        "open": 63969.8351,
+        "high": 63980.5734,
+        "low": 63941.3666,
+        "close": 63952.1048,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705108000000,
+        "open": 63952.1048,
+        "high": 63962.709,
+        "low": 63923.9934,
+        "close": 63934.5977,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705111600000,
+        "open": 63934.5977,
+        "high": 63943.3776,
+        "low": 63911.3513,
+        "close": 63920.1312,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705115200000,
+        "open": 63920.1312,
+        "high": 63925.843,
+        "low": 63905.0664,
+        "close": 63910.7782,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705118800000,
+        "open": 63910.7782,
+        "high": 63912.9294,
+        "low": 63905.2085,
+        "close": 63907.3597,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705122400000,
+        "open": 63907.3597,
+        "high": 63910.4738,
+        "low": 63906.1294,
+        "close": 63909.2435,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705126000000,
+        "open": 63909.2435,
+        "high": 63917.7531,
+        "low": 63905.9899,
+        "close": 63914.4995,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705129600000,
+        "open": 63914.4995,
+        "high": 63923.9952,
+        "low": 63910.8761,
+        "close": 63920.3718,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705133200000,
+        "open": 63920.3718,
+        "high": 63926.2027,
+        "low": 63918.1227,
+        "close": 63923.9536,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705136800000,
+        "open": 63923.9536,
+        "high": 63924.6864,
+        "low": 63922.1663,
+        "close": 63922.8991,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705140400000,
+        "open": 63922.8991,
+        "high": 63927.1401,
+        "low": 63911.7562,
+        "close": 63915.9972,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705144000000,
+        "open": 63915.9972,
+        "high": 63916.0972,
+        "low": 63915.8972,
+        "close": 63915.9972,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705147600000,
+        "open": 63915.9972,
+        "high": 63928.8972,
+        "low": 63911.0972,
+        "close": 63923.9972,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705151200000,
+        "open": 63923.9972,
+        "high": 63949.6972,
+        "low": 63914.2972,
+        "close": 63939.9972,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705154800000,
+        "open": 63939.9972,
+        "high": 63940.0972,
+        "low": 63939.8972,
+        "close": 63939.9972,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705158400000,
+        "open": 63939.9972,
+        "high": 63952.8972,
+        "low": 63935.0972,
+        "close": 63947.9972,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705162000000,
+        "open": 63947.9972,
+        "high": 63973.6972,
+        "low": 63938.2972,
+        "close": 63963.9972,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705165600000,
+        "open": 63963.9972,
+        "high": 63964.0972,
+        "low": 63963.8972,
+        "close": 63963.9972,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705169200000,
+        "open": 63963.9972,
+        "high": 63976.8972,
+        "low": 63959.0972,
+        "close": 63971.9972,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705172800000,
+        "open": 63971.9972,
+        "high": 63997.6972,
+        "low": 63962.2972,
+        "close": 63987.9972,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705176400000,
+        "open": 63987.9972,
+        "high": 63988.0972,
+        "low": 63987.8972,
+        "close": 63987.9972,
+        "volume": 1020
+      },
+      {
+        "timestamp": 1705180000000,
+        "open": 63987.9972,
+        "high": 64000.8972,
+        "low": 63983.0972,
+        "close": 63995.9972,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705183600000,
+        "open": 63995.9972,
+        "high": 64021.6972,
+        "low": 63986.2972,
+        "close": 64011.9972,
+        "volume": 930
+      },
+      {
+        "timestamp": 1705187200000,
+        "open": 64011.9972,
+        "high": 64012.0972,
+        "low": 64011.8972,
+        "close": 64011.9972,
+        "volume": 960
+      },
+      {
+        "timestamp": 1705190800000,
+        "open": 64011.9972,
+        "high": 64024.8972,
+        "low": 64007.0972,
+        "close": 64019.9972,
+        "volume": 990
+      },
+      {
+        "timestamp": 1705194400000,
+        "open": 64019.9972,
+        "high": 64045.6972,
+        "low": 64010.2972,
+        "close": 64035.9972,
+        "volume": 1020
+      }
+    ],
+    "indicators": {
+      "rsi": 58.0,
+      "macd": {
+        "macd": 18.0,
+        "signal": 14.0,
+        "histogram": 4.0
+      },
+      "atr": 95.0,
+      "adx": 24.0,
+      "stochastic": {
+        "k": 65.0,
+        "d": 60.0,
+        "zone": "neutral"
+      },
+      "williams_r": -38.0,
+      "bollinger_bands": {
+        "upper": 64600,
+        "middle": 64200,
+        "lower": 63800
+      },
+      "volume_ma": {
+        "ratio": 1.05
+      },
+      "volatility_percentile": 42.0
+    },
+    "flow_data": {
+      "funding_rate": 0.0002,
+      "oi_change_4h": 0.015,
+      "data_richness": "PARTIAL"
+    },
+    "regime_context": "lower_tf_bull_higher_tf_bear",
+    "timestamp": "2026-04-08T12:00:00+00:00",
+    "parent_timeframe": {
+      "timeframe": "4h",
+      "trend": "BEARISH",
+      "rsi_trend": "declining 65 \u2192 48",
+      "structure": "lower highs, lower lows",
+      "adx": 26,
+      "ma_position": "BELOW_50MA"
+    }
+  },
+  "expected": {
+    "signal_direction": null,
+    "signal_confidence_max": 0.55,
+    "conviction_max": 0.35,
+    "expected_action": "SKIP",
+    "key_features_to_mention": [
+      "parent timeframe bearish",
+      "4h structure",
+      "higher timeframe trumps",
+      "counter-trend"
+    ],
+    "notes": "On the 1h alone this looks like a bull flag worth taking \u2014 RSI 58, MACD crossing up, ADX building. BUT the 4h chart is making lower highs and lower lows: RSI declining from 65 to 48, price below 4h 50-MA, ADX 26 on the downside. Taking a 1h long against a 4h bearish structure is a counter-trend trade with the parent TF working against you. Agent should defer to the higher timeframe. SKIP, or at most a very low conviction (< 0.35) entry."
+  },
+  "metadata": {
+    "hand_labeled": true,
+    "story": "cross_tf_conflict"
+  }
+}

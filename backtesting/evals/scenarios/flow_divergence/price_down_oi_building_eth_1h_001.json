@@ -1,0 +1,466 @@
+{
+  "id": "price_down_oi_building_eth_1h_001",
+  "name": "ETH 1h price down / OI building accumulation",
+  "category": "flow_divergence",
+  "version": 1,
+  "created_at": "2026-04-08T12:00:00+00:00",
+  "last_validated": "2026-04-08T12:00:00+00:00",
+  "inputs": {
+    "symbol": "ETH-USDC",
+    "timeframe": "1h",
+    "ohlcv": [
+      {
+        "timestamp": 1705000000000,
+        "open": 3517.0,
+        "high": 3517.1,
+        "low": 3516.9,
+        "close": 3517.0,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705003600000,
+        "open": 3517.0,
+        "high": 3522.6642,
+        "low": 3514.8134,
+        "close": 3520.4776,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705007200000,
+        "open": 3520.4776,
+        "high": 3525.9306,
+        "low": 3518.3702,
+        "close": 3523.8232,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705010800000,
+        "open": 3523.8232,
+        "high": 3528.8727,
+        "low": 3521.8672,
+        "close": 3526.9166,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705014400000,
+        "open": 3526.9166,
+        "high": 3530.1705,
+        "low": 3518.4063,
+        "close": 3521.6602,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705018000000,
+        "open": 3521.6602,
+        "high": 3525.4838,
+        "low": 3520.1638,
+        "close": 3523.9875,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705021600000,
+        "open": 3523.9875,
+        "high": 3527.0983,
+        "low": 3522.7584,
+        "close": 3525.8692,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705025200000,
+        "open": 3525.8692,
+        "high": 3528.2841,
+        "low": 3524.9012,
+        "close": 3527.316,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705028800000,
+        "open": 3527.316,
+        "high": 3531.5793,
+        "low": 3516.1141,
+        "close": 3520.3773,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705032400000,
+        "open": 3520.3773,
+        "high": 3521.6926,
+        "low": 3519.8216,
+        "close": 3521.1369,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705036000000,
+        "open": 3521.1369,
+        "high": 3522.1468,
+        "low": 3520.6957,
+        "close": 3521.7056,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705039600000,
+        "open": 3521.7056,
+        "high": 3522.6147,
+        "low": 3521.3022,
+        "close": 3522.2113,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705043200000,
+        "open": 3522.2113,
+        "high": 3526.7656,
+        "low": 3510.2331,
+        "close": 3514.7874,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705046800000,
+        "open": 3514.7874,
+        "high": 3516.1254,
+        "low": 3514.2231,
+        "close": 3515.5612,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705050400000,
+        "open": 3515.5612,
+        "high": 3517.3907,
+        "low": 3514.8126,
+        "close": 3516.6421,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705054000000,
+        "open": 3516.6421,
+        "high": 3519.0945,
+        "low": 3515.66,
+        "close": 3518.1123,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705057600000,
+        "open": 3518.1123,
+        "high": 3521.8683,
+        "low": 3508.2633,
+        "close": 3512.0192,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705061200000,
+        "open": 3512.0192,
+        "high": 3515.882,
+        "low": 3510.5081,
+        "close": 3514.3709,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705064800000,
+        "open": 3514.3709,
+        "high": 3518.8953,
+        "low": 3512.6118,
+        "close": 3517.1362,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705068400000,
+        "open": 3517.1362,
+        "high": 3522.2128,
+        "low": 3515.1699,
+        "close": 3520.2466,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705072000000,
+        "open": 3520.2466,
+        "high": 3523.1328,
+        "low": 3512.7167,
+        "close": 3515.6029,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705075600000,
+        "open": 3515.6029,
+        "high": 3521.2728,
+        "low": 3513.4142,
+        "close": 3519.0841,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705079200000,
+        "open": 3519.0841,
+        "high": 3524.7419,
+        "low": 3516.8999,
+        "close": 3522.5577,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705082800000,
+        "open": 3522.5577,
+        "high": 3527.9929,
+        "low": 3520.457,
+        "close": 3525.8922,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705086400000,
+        "open": 3525.8922,
+        "high": 3528.9465,
+        "low": 3517.914,
+        "close": 3520.9683,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705090000000,
+        "open": 3520.9683,
+        "high": 3525.423,
+        "low": 3519.2353,
+        "close": 3523.69,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705093600000,
+        "open": 3523.69,
+        "high": 3527.4743,
+        "low": 3522.2084,
+        "close": 3525.9927,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705097200000,
+        "open": 3525.9927,
+        "high": 3529.0635,
+        "low": 3524.7787,
+        "close": 3527.8494,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705100800000,
+        "open": 3527.8494,
+        "high": 3531.8953,
+        "low": 3517.2271,
+        "close": 3521.273,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705104400000,
+        "open": 3521.273,
+        "high": 3523.04,
+        "low": 3520.5479,
+        "close": 3522.3148,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705108000000,
+        "open": 3522.3148,
+        "high": 3523.608,
+        "low": 3521.7674,
+        "close": 3523.0606,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705111600000,
+        "open": 3523.0606,
+        "high": 3524.0593,
+        "low": 3522.6236,
+        "close": 3523.6223,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705115200000,
+        "open": 3523.6223,
+        "high": 3528.2186,
+        "low": 3511.532,
+        "close": 3516.1284,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705118800000,
+        "open": 3516.1284,
+        "high": 3517.1627,
+        "low": 3515.678,
+        "close": 3516.7123,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705122400000,
+        "open": 3516.7123,
+        "high": 3518.0736,
+        "low": 3516.1393,
+        "close": 3517.5006,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705126000000,
+        "open": 3517.5006,
+        "high": 3519.3621,
+        "low": 3516.7401,
+        "close": 3518.6015,
+        "volume": 380
+      },
+      {
+        "timestamp": 1705129600000,
+        "open": 3518.6015,
+        "high": 3522.6052,
+        "low": 3508.0916,
+        "close": 3512.0953,
+        "volume": 400
+      },
+      {
+        "timestamp": 1705133200000,
+        "open": 3512.0953,
+        "high": 3515.2864,
+        "low": 3510.8362,
+        "close": 3514.0272,
+        "volume": 420
+      },
+      {
+        "timestamp": 1705136800000,
+        "open": 3514.0272,
+        "high": 3517.929,
+        "low": 3512.5016,
+        "close": 3516.4034,
+        "volume": 440
+      },
+      {
+        "timestamp": 1705140400000,
+        "open": 3516.4034,
+        "high": 3520.9621,
+        "low": 3514.6313,
+        "close": 3519.1901,
+        "volume": 460
+      },
+      {
+        "timestamp": 1705144000000,
+        "open": 3519.1901,
+        "high": 3525.6246,
+        "low": 3502.198,
+        "close": 3508.6325,
+        "volume": 500
+      },
+      {
+        "timestamp": 1705147600000,
+        "open": 3508.6325,
+        "high": 3515.0671,
+        "low": 3491.6404,
+        "close": 3498.0749,
+        "volume": 560
+      },
+      {
+        "timestamp": 1705151200000,
+        "open": 3498.0749,
+        "high": 3504.5095,
+        "low": 3481.0828,
+        "close": 3487.5174,
+        "volume": 620
+      },
+      {
+        "timestamp": 1705154800000,
+        "open": 3487.5174,
+        "high": 3493.9519,
+        "low": 3470.5253,
+        "close": 3476.9598,
+        "volume": 680
+      },
+      {
+        "timestamp": 1705158400000,
+        "open": 3476.9598,
+        "high": 3483.3943,
+        "low": 3459.9677,
+        "close": 3466.4022,
+        "volume": 740
+      },
+      {
+        "timestamp": 1705162000000,
+        "open": 3466.4022,
+        "high": 3472.8368,
+        "low": 3449.4101,
+        "close": 3455.8447,
+        "volume": 800
+      },
+      {
+        "timestamp": 1705165600000,
+        "open": 3455.8447,
+        "high": 3462.2792,
+        "low": 3438.8525,
+        "close": 3445.2871,
+        "volume": 860
+      },
+      {
+        "timestamp": 1705169200000,
+        "open": 3445.2871,
+        "high": 3451.7216,
+        "low": 3428.295,
+        "close": 3434.7295,
+        "volume": 920
+      },
+      {
+        "timestamp": 1705172800000,
+        "open": 3434.7295,
+        "high": 3441.1641,
+        "low": 3417.7374,
+        "close": 3424.1719,
+        "volume": 980
+      },
+      {
+        "timestamp": 1705176400000,
+        "open": 3424.1719,
+        "high": 3430.6065,
+        "low": 3407.1798,
+        "close": 3413.6144,
+        "volume": 1040
+      }
+    ],
+    "indicators": {
+      "rsi": 38.0,
+      "macd": {
+        "macd": -8.0,
+        "signal": -5.0,
+        "histogram": -3.0
+      },
+      "atr": 18.0,
+      "adx": 20.0,
+      "stochastic": {
+        "k": 28.0,
+        "d": 35.0,
+        "zone": "neutral"
+      },
+      "williams_r": -68.0,
+      "bollinger_bands": {
+        "upper": 3550,
+        "middle": 3500,
+        "lower": 3450
+      },
+      "volume_ma": {
+        "ratio": 1.55
+      },
+      "volatility_percentile": 55.0
+    },
+    "flow_data": {
+      "funding_rate": -0.0001,
+      "oi_change_4h": 0.08,
+      "oi_change_12h": 0.08,
+      "data_richness": "PARTIAL"
+    },
+    "regime_context": "accumulation_pullback",
+    "timestamp": "2026-04-08T12:00:00+00:00"
+  },
+  "expected": {
+    "signal_direction": "BULLISH",
+    "signal_confidence_min": 0.5,
+    "conviction_min": 0.5,
+    "conviction_max": 0.65,
+    "expected_action": "LONG",
+    "key_features_to_mention": [
+      "OI building",
+      "accumulation",
+      "flow divergence",
+      "shorts paying longs",
+      "rising volume on decline"
+    ],
+    "notes": "Contrarian setup. Price has declined -3% over the last 10 bars, RSI is at 38 (not yet oversold), and the visual is clearly bearish. BUT: OI has *increased* 8% during the decline (positions are being opened, not closed \u2014 accumulation), funding rate has flipped negative (shorts are paying longs, suggesting the short side is crowded), and volume is rising on the down moves but in a way that's classic absorption. This is smart money buying the pullback. Agent should identify the OI-building-during-decline as the key tell and take a moderate-conviction LONG (0.5\u20130.65). Conviction is bounded because the price action hasn't yet confirmed \u2014 this is an early-entry contrarian play."
+  },
+  "metadata": {
+    "hand_labeled": true,
+    "story": "smart_money_accumulation"
+  }
+}

@@ -16,17 +16,22 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from engine.data.indicators import compute_all_indicators
 from engine.data.swing_detection import find_swing_highs, find_swing_lows
 from engine.events import EventBus, SetupDetected
 from exchanges.base import ExchangeAdapter
+from mcp.macro_regime.agent import load_macro_regime
 from sentinel.conditions import ReadinessScorer
 from sentinel.config import get_sentinel_cooldown, get_sentinel_daily_budget
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_MACRO_REGIME_PATH = Path("macro_regime.json")
 
 
 class SentinelMonitor:
@@ -48,6 +53,9 @@ class SentinelMonitor:
         cooldown_seconds: int | None = None,
         daily_budget: int | None = None,
         candle_window: int = 30,
+        cache=None,
+        macro_regime_path: Path | str = _DEFAULT_MACRO_REGIME_PATH,
+        clock=None,
     ) -> None:
         self._adapter = adapter
         self._bus = event_bus
@@ -58,6 +66,9 @@ class SentinelMonitor:
         self._cooldown_seconds = cooldown_seconds if cooldown_seconds is not None else get_sentinel_cooldown(timeframe)
         self._daily_budget = daily_budget if daily_budget is not None else get_sentinel_daily_budget(timeframe)
         self._candle_window = candle_window
+        self._cache = cache  # Optional CacheManager — used for L2/L3 reads only
+        self._macro_regime_path = Path(macro_regime_path)
+        self._clock = clock or (lambda: datetime.now(tz=timezone.utc))
 
         self._scorer = ReadinessScorer()
         self._last_trigger: datetime | None = None
@@ -121,10 +132,19 @@ class SentinelMonitor:
         swing_highs = find_swing_highs(highs)
         swing_lows = find_swing_lows(lows)
 
-        # Funding rate (optional)
+        # Funding rate (L2 — read from cache if available)
         funding_rate = None
         try:
-            funding_rate = await self._adapter.get_funding_rate(self._symbol)
+            if self._cache is not None:
+                from storage.cache import funding_key
+                from storage.cache.ttl import FLOW_TTL
+                funding_rate = await self._cache.get_or_fetch(
+                    funding_key(self._symbol),
+                    lambda: self._adapter.get_funding_rate(self._symbol),
+                    ttl=FLOW_TTL,
+                )
+            else:
+                funding_rate = await self._adapter.get_funding_rate(self._symbol)
         except Exception:
             pass
 
@@ -150,31 +170,82 @@ class SentinelMonitor:
 
         # Check if we should emit SetupDetected
         if score >= self._threshold:
-            if self._can_trigger(now):
-                self._last_trigger = now
-                self._daily_trigger_count += 1
-
-                logger.info(
-                    f"Sentinel: SETUP DETECTED for {self._symbol} "
-                    f"(readiness={score:.2f}, triggers today={self._daily_trigger_count})"
-                )
-
-                try:
-                    await self._bus.publish(SetupDetected(
-                        source="sentinel",
-                        symbol=self._symbol,
-                        readiness=score,
-                        conditions=[c.detail for c in conditions if c.triggered],
-                    ))
-                except Exception:
-                    logger.warning("Sentinel: failed to emit SetupDetected", exc_info=True)
-            else:
+            if not self._can_trigger(now):
                 logger.debug(
                     f"Sentinel: {self._symbol} readiness={score:.2f} above threshold "
                     f"but cooldown/budget prevents trigger"
                 )
+                return score, conditions
+
+            # Macro blackout suppression (§13.2.4) — check AFTER cooldown so a
+            # blackout doesn't quietly burn the daily budget. The blackout
+            # check is read-only filesystem I/O; missing or expired files
+            # behave as "no blackout" and the cycle proceeds normally.
+            blackout_reason = self._active_blackout_reason()
+            if blackout_reason is not None:
+                logger.info(
+                    f"Sentinel: {self._symbol} setup detected "
+                    f"(readiness={score:.2f}) but blackout active "
+                    f"({blackout_reason}), suppressing"
+                )
+                return score, conditions
+
+            self._last_trigger = now
+            self._daily_trigger_count += 1
+
+            logger.info(
+                f"Sentinel: SETUP DETECTED for {self._symbol} "
+                f"(readiness={score:.2f}, triggers today={self._daily_trigger_count})"
+            )
+
+            try:
+                await self._bus.publish(SetupDetected(
+                    source="sentinel",
+                    symbol=self._symbol,
+                    readiness=score,
+                    conditions=[c.detail for c in conditions if c.triggered],
+                ))
+            except Exception:
+                logger.warning("Sentinel: failed to emit SetupDetected", exc_info=True)
 
         return score, conditions
+
+    # ------------------------------------------------------------------
+    # Macro blackout helper
+    # ------------------------------------------------------------------
+
+    def _active_blackout_reason(self) -> str | None:
+        """Return the reason of any active blackout window, else None.
+
+        A missing / unparseable / expired `macro_regime.json` is the
+        safe default — no suppression. Failures here MUST NOT crash
+        the Sentinel loop, so the entire check is wrapped.
+        """
+        try:
+            macro = load_macro_regime(self._macro_regime_path)
+            if macro is None or macro.error is not None:
+                return None
+            now = self._clock()
+            # Honour expires — a stale regime overlay shouldn't keep
+            # blocking new entries indefinitely.
+            if macro.expires:
+                try:
+                    expires_dt = datetime.fromisoformat(
+                        macro.expires.replace("Z", "+00:00")
+                    )
+                    if expires_dt.tzinfo is None:
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    if now > expires_dt:
+                        return None
+                except (TypeError, ValueError):
+                    return None
+            for window in macro.blackout_windows:
+                if window.contains(now):
+                    return window.reason
+            return None
+        except Exception:
+            logger.warning("Sentinel: macro_regime blackout check failed", exc_info=True)
+            return None
 
     def _can_trigger(self, now: datetime) -> bool:
         """Check cooldown and daily budget constraints."""

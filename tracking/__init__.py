@@ -6,6 +6,8 @@ in _safe() to catch and log errors without propagating them.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 
 from engine.events import (
@@ -21,6 +23,7 @@ from engine.events import (
 from tracking.data_moat import DataMoatCapture
 from tracking.decision import DecisionTracker
 from tracking.financial import FinancialTracker
+from tracking.forward_r import ForwardMaxRStamper
 from tracking.health import HealthTracker
 
 logger = logging.getLogger(__name__)
@@ -39,11 +42,15 @@ class TrackingModule:
         decision: DecisionTracker | None = None,
         health: HealthTracker | None = None,
         data_moat: DataMoatCapture | None = None,
+        forward_max_r_stamper: ForwardMaxRStamper | None = None,
     ) -> None:
         self.financial = financial or FinancialTracker()
         self.decision = decision or DecisionTracker()
         self.health = health or HealthTracker()
         self.data_moat = data_moat or DataMoatCapture()
+        # Optional — only wired in production where the trade repo and
+        # ForwardPathLoader are configured. Tests typically pass None.
+        self.forward_max_r_stamper = forward_max_r_stamper
 
     def subscribe_all(self, bus: EventBus) -> None:
         """Subscribe all tracking handlers to the event bus."""
@@ -71,6 +78,13 @@ class TrackingModule:
         bus.subscribe(TradeClosed, self._safe(self.data_moat.on_trade_closed))
         bus.subscribe(RuleGenerated, self._safe(self.data_moat.on_rule_generated))
 
+        # Forward-max-R stamping (auto-miner input). Optional dep.
+        if self.forward_max_r_stamper is not None:
+            bus.subscribe(
+                TradeClosed,
+                self._safe(self.forward_max_r_stamper.on_trade_closed),
+            )
+
         logger.info("TrackingModule: subscribed to all events")
 
     def summary(self) -> dict:
@@ -84,10 +98,41 @@ class TrackingModule:
 
     @staticmethod
     def _safe(handler: callable) -> callable:
-        """Wrap a handler so exceptions are logged but never propagate."""
+        """Wrap a handler so exceptions are logged but never propagate.
+
+        Detects async handlers (`async def` OR sync functions that
+        return a coroutine) and returns an async wrapper for them so
+        the InProcessBus can await the result. Sync handlers get a
+        plain sync wrapper.
+        """
+        if inspect.iscoroutinefunction(handler):
+            async def async_wrapped(event) -> None:
+                try:
+                    await handler(event)
+                except Exception:
+                    logger.exception(
+                        f"TrackingModule: handler {handler.__qualname__} failed "
+                        f"for {type(event).__name__}"
+                    )
+            return async_wrapped
+
         def wrapped(event) -> None:
             try:
-                handler(event)
+                result = handler(event)
+                if asyncio.iscoroutine(result):
+                    # Handler is technically sync but returned a coroutine
+                    # (e.g. lambda: some_async_call()). Schedule it on the
+                    # running loop or warn loudly if there isn't one.
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(result)
+                    except RuntimeError:
+                        logger.warning(
+                            f"TrackingModule: {handler.__qualname__} returned "
+                            "a coroutine but no event loop is running; coroutine "
+                            "will not be awaited"
+                        )
+                        result.close()
             except Exception:
                 logger.exception(
                     f"TrackingModule: handler {handler.__qualname__} failed "

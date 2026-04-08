@@ -1,0 +1,463 @@
+{
+  "id": "quiet_to_volatile_eth_1h_001",
+  "name": "ETH 1h quiet \u2192 sudden volatility expansion",
+  "category": "regime_transitions",
+  "version": 1,
+  "created_at": "2026-04-08T12:00:00+00:00",
+  "last_validated": "2026-04-08T12:00:00+00:00",
+  "inputs": {
+    "symbol": "ETH-USDC",
+    "timeframe": "1h",
+    "ohlcv": [
+      {
+        "timestamp": 1705000000000,
+        "open": 3498.5,
+        "high": 3498.6,
+        "low": 3498.4,
+        "close": 3498.5,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705003600000,
+        "open": 3498.5,
+        "high": 3503.4923,
+        "low": 3496.5654,
+        "close": 3501.5577,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705007200000,
+        "open": 3501.5577,
+        "high": 3506.1565,
+        "low": 3499.7706,
+        "close": 3504.3694,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705010800000,
+        "open": 3504.3694,
+        "high": 3505.7542,
+        "low": 3500.8434,
+        "close": 3502.2282,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705014400000,
+        "open": 3502.2282,
+        "high": 3505.1604,
+        "low": 3501.0661,
+        "close": 3503.9983,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705018000000,
+        "open": 3503.9983,
+        "high": 3505.9205,
+        "low": 3503.215,
+        "close": 3505.1372,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705021600000,
+        "open": 3505.1372,
+        "high": 3507.5984,
+        "low": 3498.7407,
+        "close": 3501.2019,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705025200000,
+        "open": 3501.2019,
+        "high": 3501.5228,
+        "low": 3501.019,
+        "close": 3501.34,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705028800000,
+        "open": 3501.34,
+        "high": 3501.484,
+        "low": 3501.1224,
+        "close": 3501.2665,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705032400000,
+        "open": 3501.2665,
+        "high": 3504.0885,
+        "low": 3493.908,
+        "close": 3496.7299,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705036000000,
+        "open": 3496.7299,
+        "high": 3497.2185,
+        "low": 3496.4842,
+        "close": 3496.9728,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705039600000,
+        "open": 3496.9728,
+        "high": 3498.2261,
+        "low": 3496.4403,
+        "close": 3497.6936,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705043200000,
+        "open": 3497.6936,
+        "high": 3499.7005,
+        "low": 3492.5084,
+        "close": 3494.5153,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705046800000,
+        "open": 3494.5153,
+        "high": 3497.7367,
+        "low": 3493.2448,
+        "close": 3496.4662,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705050400000,
+        "open": 3496.4662,
+        "high": 3500.5802,
+        "low": 3494.8609,
+        "close": 3498.9749,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705054000000,
+        "open": 3498.9749,
+        "high": 3500.0305,
+        "low": 3496.3268,
+        "close": 3497.3823,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705057600000,
+        "open": 3497.3823,
+        "high": 3502.4165,
+        "low": 3495.432,
+        "close": 3500.4662,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705061200000,
+        "open": 3500.4662,
+        "high": 3505.3826,
+        "low": 3498.56,
+        "close": 3503.4765,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705064800000,
+        "open": 3503.4765,
+        "high": 3504.6575,
+        "low": 3500.4936,
+        "close": 3501.6747,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705068400000,
+        "open": 3501.6747,
+        "high": 3505.2899,
+        "low": 3500.2565,
+        "close": 3503.8717,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705072000000,
+        "open": 3503.8717,
+        "high": 3506.5089,
+        "low": 3502.8202,
+        "close": 3505.4574,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705075600000,
+        "open": 3505.4574,
+        "high": 3507.6809,
+        "low": 3499.695,
+        "close": 3501.9184,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705079200000,
+        "open": 3501.9184,
+        "high": 3502.6924,
+        "low": 3501.5656,
+        "close": 3502.3397,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705082800000,
+        "open": 3502.3397,
+        "high": 3502.5227,
+        "low": 3502.2085,
+        "close": 3502.3916,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705086400000,
+        "open": 3502.3916,
+        "high": 3505.2449,
+        "low": 3494.9494,
+        "close": 3497.8027,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705090000000,
+        "open": 3497.8027,
+        "high": 3497.9366,
+        "low": 3497.69,
+        "close": 3497.8239,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705093600000,
+        "open": 3497.8239,
+        "high": 3498.5076,
+        "low": 3497.505,
+        "close": 3498.1887,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705097200000,
+        "open": 3498.1887,
+        "high": 3500.4562,
+        "low": 3492.3088,
+        "close": 3494.5763,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705100800000,
+        "open": 3494.5763,
+        "high": 3497.0875,
+        "low": 3493.572,
+        "close": 3496.0833,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705104400000,
+        "open": 3496.0833,
+        "high": 3499.5839,
+        "low": 3494.7081,
+        "close": 3498.2087,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705108000000,
+        "open": 3498.2087,
+        "high": 3499.4217,
+        "low": 3495.1407,
+        "close": 3496.3537,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705111600000,
+        "open": 3496.3537,
+        "high": 3501.2279,
+        "low": 3494.4634,
+        "close": 3499.3376,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705115200000,
+        "open": 3499.3376,
+        "high": 3504.3791,
+        "low": 3497.3845,
+        "close": 3502.426,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705118800000,
+        "open": 3502.426,
+        "high": 3503.4607,
+        "low": 3499.8336,
+        "close": 3500.8683,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705122400000,
+        "open": 3500.8683,
+        "high": 3505.0777,
+        "low": 3499.2273,
+        "close": 3503.4366,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705126000000,
+        "open": 3503.4366,
+        "high": 3506.7779,
+        "low": 3502.1212,
+        "close": 3505.4624,
+        "volume": 180
+      },
+      {
+        "timestamp": 1705129600000,
+        "open": 3505.4624,
+        "high": 3507.4223,
+        "low": 3500.4028,
+        "close": 3502.3626,
+        "volume": 190
+      },
+      {
+        "timestamp": 1705133200000,
+        "open": 3502.3626,
+        "high": 3503.7272,
+        "low": 3501.7884,
+        "close": 3503.153,
+        "volume": 200
+      },
+      {
+        "timestamp": 1705136800000,
+        "open": 3503.153,
+        "high": 3503.7211,
+        "low": 3502.8775,
+        "close": 3503.4456,
+        "volume": 210
+      },
+      {
+        "timestamp": 1705140400000,
+        "open": 3503.4456,
+        "high": 3506.2543,
+        "low": 3496.1223,
+        "close": 3498.931,
+        "volume": 220
+      },
+      {
+        "timestamp": 1705144000000,
+        "open": 3498.931,
+        "high": 3643.031,
+        "low": 3444.831,
+        "close": 3588.931,
+        "volume": 1800
+      },
+      {
+        "timestamp": 1705147600000,
+        "open": 3588.931,
+        "high": 3619.031,
+        "low": 3508.831,
+        "close": 3538.931,
+        "volume": 900
+      },
+      {
+        "timestamp": 1705151200000,
+        "open": 3538.931,
+        "high": 3554.031,
+        "low": 3498.831,
+        "close": 3513.931,
+        "volume": 870
+      },
+      {
+        "timestamp": 1705154800000,
+        "open": 3513.931,
+        "high": 3514.031,
+        "low": 3513.831,
+        "close": 3513.931,
+        "volume": 840
+      },
+      {
+        "timestamp": 1705158400000,
+        "open": 3513.931,
+        "high": 3554.031,
+        "low": 3498.831,
+        "close": 3538.931,
+        "volume": 810
+      },
+      {
+        "timestamp": 1705162000000,
+        "open": 3538.931,
+        "high": 3569.031,
+        "low": 3458.831,
+        "close": 3488.931,
+        "volume": 780
+      },
+      {
+        "timestamp": 1705165600000,
+        "open": 3488.931,
+        "high": 3504.031,
+        "low": 3448.831,
+        "close": 3463.931,
+        "volume": 750
+      },
+      {
+        "timestamp": 1705169200000,
+        "open": 3463.931,
+        "high": 3464.031,
+        "low": 3463.831,
+        "close": 3463.931,
+        "volume": 720
+      },
+      {
+        "timestamp": 1705172800000,
+        "open": 3463.931,
+        "high": 3504.031,
+        "low": 3448.831,
+        "close": 3488.931,
+        "volume": 690
+      },
+      {
+        "timestamp": 1705176400000,
+        "open": 3488.931,
+        "high": 3519.031,
+        "low": 3408.831,
+        "close": 3438.931,
+        "volume": 660
+      }
+    ],
+    "indicators": {
+      "rsi": 55.0,
+      "macd": {
+        "macd": 8.2,
+        "signal": 7.8,
+        "histogram": 0.4
+      },
+      "atr": 32.0,
+      "adx": 14.0,
+      "stochastic": {
+        "k": 62.0,
+        "d": 55.0,
+        "zone": "neutral"
+      },
+      "williams_r": -35.0,
+      "bollinger_bands": {
+        "upper": 3580,
+        "middle": 3505,
+        "lower": 3430
+      },
+      "volume_ma": {
+        "ratio": 1.85
+      },
+      "volatility_percentile": 92.0
+    },
+    "flow_data": {
+      "funding_rate": 8e-05,
+      "oi_change_4h": 0.025,
+      "data_richness": "PARTIAL"
+    },
+    "regime_context": "quiet_to_volatile",
+    "timestamp": "2026-04-08T12:00:00+00:00"
+  },
+  "expected": {
+    "signal_direction": null,
+    "signal_confidence_max": 0.5,
+    "conviction_max": 0.4,
+    "expected_action": "SKIP",
+    "key_features_to_mention": [
+      "volatility expansion",
+      "regime change",
+      "ATR jump",
+      "premature entry risk"
+    ],
+    "notes": "Volatility was at the 10th percentile for 40 bars; the most recent candle expanded ATR to the 92nd percentile with a 1.85x volume spike. MACD just barely crossed (histogram 0.4) and RSI is dead-neutral. This is the moment of regime change \u2014 too early to take a directional trade. The agent should SKIP and wait for the new regime to establish."
+  },
+  "metadata": {
+    "hand_labeled": true,
+    "story": "volatility_expansion"
+  }
+}

@@ -17,7 +17,13 @@ class ExchangeAdapter(ABC):
     def capabilities(self) -> AdapterCapabilities: ...
 
     @abstractmethod
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> list[dict]: ...
+    async def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 100,
+        since: int | None = None,
+    ) -> list[dict]: ...
 
     @abstractmethod
     async def get_ticker(self, symbol: str) -> dict: ...

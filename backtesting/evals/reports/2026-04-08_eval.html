@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>QuantAgent Eval Report</title>
+<style>
+:root {
+  color-scheme: light;
+  --text: #1d1d1f;
+  --muted: #6b7280;
+  --bg: #fafafa;
+  --card-bg: #ffffff;
+  --border: #e5e7eb;
+  --good: #16a34a;
+  --warn: #f59e0b;
+  --bad: #dc2626;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg); color: var(--text); margin: 0; padding: 24px;
+}
+main { max-width: 1100px; margin: 0 auto; }
+header h1 { margin: 0 0 4px; font-size: 28px; }
+.subtitle { color: var(--muted); margin: 0 0 16px; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; font-weight: 500; }
+section { margin-top: 32px; }
+section h2 { font-size: 18px; margin: 0 0 12px; }
+.hero {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.hero .value { font-size: 56px; font-weight: 700; line-height: 1; }
+.hero .label { color: var(--muted); margin-top: 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.hero .sub { color: var(--muted); margin-top: 12px; font-size: 12px; }
+.hero.good .value { color: var(--good); }
+.hero.warn .value { color: var(--warn); }
+.hero.bad  .value { color: var(--bad); }
+table.cats { width: 100%; border-collapse: collapse; font-size: 14px; }
+table.cats th, table.cats td {
+  padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left;
+}
+table.cats th { background: var(--card-bg); color: var(--muted); font-weight: 600; }
+.good { color: var(--good); font-weight: 600; }
+.warn { color: var(--warn); font-weight: 600; }
+.bad  { color: var(--bad);  font-weight: 600; }
+.failures { list-style: none; padding: 0; }
+.failures li {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 8px;
+}
+.failures .category { color: var(--muted); font-size: 12px; }
+.failures .name { color: var(--muted); font-size: 13px; }
+.failures .reason { color: var(--bad); font-size: 12px; display: inline-block; margin-top: 4px; }
+.empty { color: var(--muted); font-style: italic; }
+footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
+footer code { background: var(--card-bg); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; }
+</style>
+</head><body><main>
+<header>
+<h1>QuantAgent Eval Report</h1>
+<p class="subtitle">Generated 2026-04-08 08:06 UTC</p>
+<dl class="meta">
+<dt>Total scenarios</dt><dd>15</dd>
+<dt>Runs per scenario</dt><dd>1</dd>
+<dt>Duration</dt><dd>0.0s</dd>
+</dl>
+</header>
+<section><h2>Overall Score</h2><div class="hero warn">
+<span class="value">60.0%</span>
+<span class="label">overall pass rate</span>
+<span class="sub">consistency stdev: 0.0000</span>
+</div></section>
+<section><h2>By Category</h2><table class="cats">
+<thead><tr><th>Category</th><th>Passed</th><th>Pass rate</th></tr></thead>
+<tbody><tr><td>clear_avoids</td><td>2 / 2</td><td class="good">100.0%</td></tr>
+<tr><td>clear_setups</td><td>2 / 2</td><td class="good">100.0%</td></tr>
+<tr><td>conflicting_signals</td><td>1 / 1</td><td class="good">100.0%</td></tr>
+<tr><td>cross_tf_conflicts</td><td>1 / 1</td><td class="good">100.0%</td></tr>
+<tr><td>edge_cases</td><td>0 / 1</td><td class="bad">0.0%</td></tr>
+<tr><td>flow_divergence</td><td>0 / 2</td><td class="bad">0.0%</td></tr>
+<tr><td>high_impact_events</td><td>1 / 2</td><td class="warn">50.0%</td></tr>
+<tr><td>regime_transitions</td><td>2 / 2</td><td class="good">100.0%</td></tr>
+<tr><td>trap_setups</td><td>0 / 2</td><td class="bad">0.0%</td></tr></tbody>
+</table></section>
+
+<section><h2>Top Failures</h2><ul class="failures"><li><strong>extreme_funding_low_liquidity_sol_1h_001</strong> <span class="category">[edge_cases]</span><br><span class="name">SOL 1h extreme funding + low liquidity</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;</span></li><li><strong>price_down_oi_building_eth_1h_001</strong> <span class="category">[flow_divergence]</span><br><span class="name">ETH 1h price down / OI building accumulation</span><br><span class="reason">action &#x27;SKIP&#x27; != expected &#x27;LONG&#x27;; direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;; conviction 0.300 below min 0.500</span></li><li><strong>price_up_flow_bearish_btc_1h_001</strong> <span class="category">[flow_divergence]</span><br><span class="name">BTC 1h price up / flow bearish divergence</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BEARISH&#x27;</span></li><li><strong>pre_fomc_btc_1h_001</strong> <span class="category">[high_impact_events]</span><br><span class="name">BTC 1h bull flag — but FOMC in 2 hours</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;</span></li><li><strong>bear_trap_eth_1h_001</strong> <span class="category">[trap_setups]</span><br><span class="name">ETH 1h bear trap / spring</span><br><span class="reason">action &#x27;SKIP&#x27; != expected &#x27;LONG&#x27;; direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BULLISH&#x27;; conviction 0.300 below min 0.500</span></li><li><strong>distribution_top_btc_4h_001</strong> <span class="category">[trap_setups]</span><br><span class="name">BTC 4h distribution top — fake breakout</span><br><span class="reason">direction &#x27;SKIP&#x27; not consistent with signal_direction &#x27;BEARISH&#x27;</span></li></ul></section>
+<footer><p>Model: <code>2026.04.2.7.1-alpha.1</code></p><p>Prompts: <code>conviction_agent=1.0, decision_agent=2.0, indicator_agent=3.2, pattern_agent=2.1, reflection_agent=1.0, trend_agent=2.1</code></p></footer>
+</main></body></html>
