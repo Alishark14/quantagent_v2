@@ -230,6 +230,15 @@ class BotRunner:
                 symbol=symbol,
                 timeframe=timeframe,
             )
+            # Activate the Task 11 escalation feedback loop: subscribe
+            # this sentinel to SetupResult events so it learns whether
+            # the analysis pipeline turned each SetupDetected into a
+            # TRADE or a SKIP. Without this call, the per-symbol
+            # readiness escalation state machine is dormant — Sentinel
+            # behaves as before (full cooldown on every fire). Must be
+            # called BEFORE `sentinel.run()` so the handler is registered
+            # by the time the first SetupDetected can fire downstream.
+            sentinel.subscribe_results()
             self._sentinels[symbol] = sentinel
             self._sentinel_tasks[symbol] = asyncio.create_task(
                 self._run_sentinel_safe(symbol, sentinel)

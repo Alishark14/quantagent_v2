@@ -625,3 +625,111 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Sentinel escalation wiring (Task 11 production-mode activation)
+# ---------------------------------------------------------------------------
+
+
+class TestSentinelEscalationWiring:
+    """Verify BotRunner activates Sentinel's SetupResult feedback loop.
+
+    The Sentinel's escalating-readiness state machine is dormant until
+    `subscribe_results()` is called. Without it, every spawned bot's
+    SKIP outcome would be invisible to the Sentinel and the threshold
+    would never ratchet up. These tests verify the wiring lives in
+    `BotRunner._register_bot` so production runs get escalation
+    automatically — a black-box check that publishing a SetupResult
+    on the bus actually mutates the registered sentinel's threshold,
+    which can only happen if `subscribe_results()` ran during
+    construction.
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_bot_activates_escalation_feedback(self, runner, event_bus):
+        from engine.events import SetupResult
+
+        await runner.start()
+        bot = _make_bot_config(bot_id="esc-bot", symbol="LINK-USDC")
+        await runner.add_bot(bot)
+
+        sentinel = runner.get_sentinel("LINK-USDC")
+        assert sentinel is not None
+        baseline = sentinel.current_threshold()
+
+        # Publish a SKIP result on the bus. If subscribe_results() ran,
+        # the sentinel's threshold ratchets up; if it didn't, the
+        # threshold stays at the baseline.
+        await event_bus.publish(SetupResult(
+            source="test", symbol="LINK-USDC", outcome="SKIP",
+            action="SKIP", bot_id="esc-bot", conviction_score=0.2,
+        ))
+
+        escalated = sentinel.current_threshold()
+        assert escalated > baseline, (
+            "BotRunner._register_bot must call sentinel.subscribe_results() "
+            "to activate the Task 11 escalation feedback loop"
+        )
+
+        await runner.stop()
+
+    @pytest.mark.asyncio
+    async def test_setup_result_for_other_symbol_does_not_escalate(
+        self, runner, event_bus
+    ):
+        """Per-symbol filter still works through the bus dispatch."""
+        from engine.events import SetupResult
+
+        await runner.start()
+        await runner.add_bot(_make_bot_config(
+            bot_id="btc-bot", symbol="BTC-USDC",
+        ))
+        await runner.add_bot(_make_bot_config(
+            bot_id="eth-bot", symbol="ETH-USDC",
+        ))
+
+        btc = runner.get_sentinel("BTC-USDC")
+        eth = runner.get_sentinel("ETH-USDC")
+        eth_baseline = eth.current_threshold()
+
+        # SKIP only on BTC
+        await event_bus.publish(SetupResult(
+            source="test", symbol="BTC-USDC", outcome="SKIP",
+            action="SKIP", bot_id="btc-bot", conviction_score=0.2,
+        ))
+
+        # BTC escalated, ETH untouched
+        assert btc.current_threshold() > eth_baseline
+        assert eth.current_threshold() == pytest.approx(eth_baseline)
+
+        await runner.stop()
+
+    @pytest.mark.asyncio
+    async def test_trade_outcome_resets_after_escalation(self, runner, event_bus):
+        """End-to-end SKIP -> escalate -> TRADE -> reset via the runner's bus."""
+        from engine.events import SetupResult
+
+        await runner.start()
+        await runner.add_bot(_make_bot_config(
+            bot_id="reset-bot", symbol="AVAX-USDC",
+        ))
+        sentinel = runner.get_sentinel("AVAX-USDC")
+        baseline = sentinel.current_threshold()
+
+        # Two SKIPs -> escalated twice
+        for _ in range(2):
+            await event_bus.publish(SetupResult(
+                source="test", symbol="AVAX-USDC", outcome="SKIP",
+                action="SKIP", bot_id="reset-bot", conviction_score=0.2,
+            ))
+        assert sentinel.current_threshold() > baseline
+
+        # TRADE -> reset
+        await event_bus.publish(SetupResult(
+            source="test", symbol="AVAX-USDC", outcome="TRADE",
+            action="LONG", bot_id="reset-bot", conviction_score=0.78,
+        ))
+        assert sentinel.current_threshold() == pytest.approx(baseline)
+
+        await runner.stop()
