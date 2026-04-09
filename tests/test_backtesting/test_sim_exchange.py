@@ -457,3 +457,124 @@ async def test_limit_order_fills_when_price_crosses():
     pos = (await a.get_positions())[0]
     assert pos.size == 1.0
     assert pos.entry_price == 100.0  # filled at limit price, not 99
+
+
+# ---------------------------------------------------------------------------
+# data_adapter delegation (shadow mode: live data, fake fills)
+# ---------------------------------------------------------------------------
+
+
+class _FakeDataAdapter:
+    """Records read-only calls and returns canned values.
+
+    Used to verify SimulatedExchangeAdapter delegates the read-only ABC
+    methods to the injected ``data_adapter`` instead of using its own
+    virtual state.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    async def fetch_ohlcv(self, symbol, timeframe, limit=100, since=None):
+        self.calls.append(("fetch_ohlcv", symbol, timeframe, limit, since))
+        return [{"timestamp": 1000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10}]
+
+    async def get_ticker(self, symbol):
+        self.calls.append(("get_ticker", symbol))
+        return {"bid": 100.0, "ask": 100.5, "last": 100.25, "volume": 9999.0}
+
+    async def fetch_orderbook(self, symbol, limit=10):
+        self.calls.append(("fetch_orderbook", symbol, limit))
+        return {"bids": [[100, 1]], "asks": [[101, 1]]}
+
+    async def get_funding_rate(self, symbol):
+        self.calls.append(("get_funding_rate", symbol))
+        return 0.0001
+
+    async def get_open_interest(self, symbol):
+        self.calls.append(("get_open_interest", symbol))
+        return 12345.0
+
+    async def fetch_meta(self):
+        self.calls.append(("fetch_meta",))
+        return [{"symbol": "BTC-USDC", "tick_size": 0.5}]
+
+    async def fetch_user_fees(self):
+        self.calls.append(("fetch_user_fees",))
+        return {"tier": 2, "staking_discount": 0.1, "referral_discount": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_data_adapter_delegates_fetch_ohlcv_without_data_loader():
+    fake = _FakeDataAdapter()
+    sim = SimulatedExchangeAdapter(initial_balance=10_000, data_adapter=fake)
+    candles = await sim.fetch_ohlcv("BTC-USDC", "1h", limit=50)
+    assert len(candles) == 1 and candles[0]["close"] == 1.5
+    assert fake.calls == [("fetch_ohlcv", "BTC-USDC", "1h", 50, None)]
+
+
+@pytest.mark.asyncio
+async def test_data_adapter_takes_priority_over_data_loader():
+    """When both are provided, data_adapter wins (shadow mode)."""
+    fake = _FakeDataAdapter()
+
+    class _Loader:
+        def load_as_market_data(self, *a, **kw):
+            raise AssertionError("data_loader should NOT be called when data_adapter is set")
+
+    sim = SimulatedExchangeAdapter(
+        initial_balance=10_000,
+        data_loader=_Loader(),
+        data_adapter=fake,
+    )
+    await sim.fetch_ohlcv("BTC-USDC", "1h", limit=10)
+    assert fake.calls[0][0] == "fetch_ohlcv"
+
+
+@pytest.mark.asyncio
+async def test_no_data_source_raises_with_helpful_message():
+    sim = SimulatedExchangeAdapter(initial_balance=10_000)
+    with pytest.raises(RuntimeError, match="data_loader.*data_adapter"):
+        await sim.fetch_ohlcv("BTC-USDC", "1h")
+
+
+@pytest.mark.asyncio
+async def test_data_adapter_delegates_read_only_methods():
+    fake = _FakeDataAdapter()
+    sim = SimulatedExchangeAdapter(initial_balance=10_000, data_adapter=fake)
+
+    ticker = await sim.get_ticker("BTC-USDC")
+    assert ticker["last"] == 100.25
+    book = await sim.fetch_orderbook("BTC-USDC", limit=5)
+    assert book["bids"] == [[100, 1]]
+    assert await sim.get_funding_rate("BTC-USDC") == 0.0001
+    assert await sim.get_open_interest("BTC-USDC") == 12345.0
+    meta = await sim.fetch_meta()
+    assert meta[0]["tick_size"] == 0.5
+    fees = await sim.fetch_user_fees()
+    assert fees["tier"] == 2
+
+    kinds = [c[0] for c in fake.calls]
+    assert kinds == [
+        "get_ticker", "fetch_orderbook", "get_funding_rate",
+        "get_open_interest", "fetch_meta", "fetch_user_fees",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_orders_use_virtual_portfolio_not_data_adapter():
+    """Order methods MUST stay virtual even when data_adapter is set —
+    that's the whole point of shadow mode."""
+    fake = _FakeDataAdapter()
+    sim = SimulatedExchangeAdapter(initial_balance=10_000, data_adapter=fake)
+    sim.set_current_prices({"BTC-USDC": 50_000.0})
+
+    res = await sim.place_market_order("BTC-USDC", "buy", size=0.1)
+    assert res.success is True
+    positions = await sim.get_positions()
+    assert len(positions) == 1 and positions[0].size == 0.1
+    # Balance comes from virtual ledger, not the delegate
+    assert await sim.get_balance() == 10_000
+    # The fake should have seen ZERO order-side calls
+    order_kinds = {"place_market_order", "close_position", "modify_sl", "get_balance", "get_positions"}
+    assert not any(c[0] in order_kinds for c in fake.calls)

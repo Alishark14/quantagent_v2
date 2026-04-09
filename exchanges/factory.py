@@ -81,8 +81,32 @@ class ExchangeFactory:
             or os.environ.get("QUANTAGENT_SHADOW_BALANCE")
             or _DEFAULT_SHADOW_BALANCE
         )
+
+        # Build a real adapter to delegate read-only data calls (ohlcv,
+        # ticker, orderbook, funding, oi, meta) to a live venue. Sentinel
+        # + signal agents need real market state in shadow mode; only the
+        # ORDER methods should be virtualised. If the requested exchange
+        # isn't in the registry, fall back to a sim with no data delegate
+        # — the caller will hit the explicit RuntimeError on first
+        # fetch_ohlcv, which is the correct failure mode.
+        data_adapter: ExchangeAdapter | None = None
+        if name in cls._registry:
+            try:
+                data_adapter = cls._registry[name](**kwargs)
+            except Exception:
+                # Credential / config error constructing the real adapter
+                # in shadow mode is non-fatal: log and continue with a
+                # data-less sim. The runner will surface the exact failure
+                # when something tries to fetch data.
+                import logging
+                logging.getLogger(__name__).exception(
+                    f"shadow factory: failed to construct data delegate "
+                    f"for {name}; sim adapter will have no data source"
+                )
+
         instance = SimulatedExchangeAdapter(
             initial_balance=balance,
+            data_adapter=data_adapter,
             name=f"shadow-{name}",
         )
         cls._shadow_instances[name] = instance

@@ -340,6 +340,39 @@ def test_factory_shadow_unknown_exchange_still_works():
     adapter = ExchangeFactory.get_adapter("ibkr")
     assert isinstance(adapter, SimulatedExchangeAdapter)
     assert adapter.name() == "shadow-ibkr"
+    # No registered live adapter → data_adapter is None; the sim raises
+    # the explicit RuntimeError on first fetch_ohlcv (correct failure mode).
+    assert adapter._data_adapter is None
+
+
+def test_factory_shadow_wires_real_adapter_as_data_delegate():
+    """Shadow sim must delegate read-only methods to a real live adapter
+    so Sentinel + signals see real market data while orders stay virtual."""
+    ExchangeFactory.reset()
+    ExchangeFactory.register("hyperliquid", _LiveAdapter)
+    enable_shadow_mode()
+
+    adapter = ExchangeFactory.get_adapter("hyperliquid")
+    assert isinstance(adapter, SimulatedExchangeAdapter)
+    assert isinstance(adapter._data_adapter, _LiveAdapter)
+
+
+def test_factory_shadow_data_delegate_construct_failure_is_nonfatal(caplog):
+    """If the live adapter ctor blows up (bad credentials, etc.) the
+    factory must still return a sim — just without a data delegate."""
+    class _BoomAdapter(_LiveAdapter):
+        def __init__(self):
+            raise RuntimeError("missing credentials")
+
+    ExchangeFactory.reset()
+    ExchangeFactory.register("hyperliquid", _BoomAdapter)
+    enable_shadow_mode()
+
+    with caplog.at_level("ERROR"):
+        adapter = ExchangeFactory.get_adapter("hyperliquid")
+    assert isinstance(adapter, SimulatedExchangeAdapter)
+    assert adapter._data_adapter is None
+    assert any("data delegate" in r.message for r in caplog.records)
 
 
 def test_factory_shadow_balance_from_env():

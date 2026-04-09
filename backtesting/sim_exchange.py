@@ -14,11 +14,16 @@ Capabilities and limitations:
 - Fees taken from a real ``ExecutionCostModel`` if injected, otherwise zero.
 - Funding applied via ``apply_funding(symbol, rate)`` whenever the
   BacktestEngine decides (default every 8h).
-- ``fetch_ohlcv`` delegates to a ``ParquetDataLoader`` if injected.
+- ``fetch_ohlcv`` delegates to a ``ParquetDataLoader`` (offline backtest)
+  OR to a real ``ExchangeAdapter`` injected as ``data_adapter`` (shadow
+  mode — live data feed, fake fills). If both are provided,
+  ``data_adapter`` wins and is used for read-only methods (ohlcv, ticker,
+  orderbook, funding rate, open interest, meta) so Sentinel + signal
+  agents see real market state.
 
-The adapter never reaches over the network. Anything not provided via
-``set_current_prices`` / ``set_current_candle`` / ``data_loader`` does not
-exist as far as the simulator is concerned.
+The adapter never reaches over the network for ORDER methods. The only
+network traffic in shadow mode comes from the injected ``data_adapter``
+servicing read-only data calls.
 """
 
 from __future__ import annotations
@@ -92,6 +97,7 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
         slippage_pct: float = 0.0005,
         fee_model: "ExecutionCostModel | None" = None,
         data_loader: "ParquetDataLoader | None" = None,
+        data_adapter: "ExchangeAdapter | None" = None,
         spread_pct: float = 0.0001,
         asset_meta: dict[str, AssetMeta] | None = None,
         name: str = "simulated",
@@ -108,6 +114,7 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
         self._spread_pct = float(spread_pct)
         self._fee_model = fee_model
         self._data_loader = data_loader
+        self._data_adapter = data_adapter
         self._asset_meta: dict[str, AssetMeta] = asset_meta or {}
         self._default_meta = AssetMeta()
 
@@ -153,11 +160,21 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
         limit: int = 100,
         since: int | None = None,
     ) -> list[dict]:
-        """Delegate to the injected ParquetDataLoader."""
+        """Delegate to data_adapter (shadow mode) or data_loader (backtest).
+
+        ``data_adapter`` takes priority when both are configured — it
+        services live data feeds in shadow mode without ParquetDataLoader
+        having to know anything about live market state.
+        """
+        if self._data_adapter is not None:
+            return await self._data_adapter.fetch_ohlcv(
+                symbol, timeframe, limit, since
+            )
         if self._data_loader is None:
             raise RuntimeError(
-                "SimulatedExchangeAdapter has no data loader. Construct with "
-                "`data_loader=ParquetDataLoader(...)` to enable fetch_ohlcv."
+                "SimulatedExchangeAdapter has no data source. Construct with "
+                "`data_loader=ParquetDataLoader(...)` for offline backtests "
+                "or `data_adapter=<real ExchangeAdapter>` for shadow mode."
             )
 
         # The pipeline asks for the most recent `limit` candles relative to
@@ -184,6 +201,8 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
         return candles[-limit:] if limit > 0 else candles
 
     async def get_ticker(self, symbol: str) -> dict:
+        if self._data_adapter is not None:
+            return await self._data_adapter.get_ticker(symbol)
         price = self._current_prices.get(symbol)
         if price is None:
             return {}
@@ -435,12 +454,18 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     async def get_funding_rate(self, symbol: str) -> float | None:
+        if self._data_adapter is not None:
+            return await self._data_adapter.get_funding_rate(symbol)
         return 0.0  # neutral by default; BacktestEngine drives apply_funding
 
     async def get_open_interest(self, symbol: str) -> float | None:
+        if self._data_adapter is not None:
+            return await self._data_adapter.get_open_interest(symbol)
         return None
 
     async def fetch_meta(self) -> list[dict]:
+        if self._data_adapter is not None:
+            return await self._data_adapter.fetch_meta()
         return [
             {
                 "symbol": sym,
@@ -452,6 +477,8 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
         ]
 
     async def fetch_orderbook(self, symbol: str, limit: int = 10) -> dict:
+        if self._data_adapter is not None:
+            return await self._data_adapter.fetch_orderbook(symbol, limit)
         price = self._current_prices.get(symbol)
         if price is None:
             return {"bids": [], "asks": []}
@@ -464,6 +491,8 @@ class SimulatedExchangeAdapter(ExchangeAdapter):
         }
 
     async def fetch_user_fees(self) -> dict:
+        if self._data_adapter is not None:
+            return await self._data_adapter.fetch_user_fees()
         return {"tier": 0, "staking_discount": 0.0, "referral_discount": 0.0}
 
     # ------------------------------------------------------------------
