@@ -157,11 +157,14 @@ class AnalysisPipeline:
             )
 
             # ── RECORD CYCLE ──
+            # NOTE: timestamp is a raw datetime object (not isoformat string).
+            # PostgreSQL TIMESTAMPTZ via asyncpg requires a datetime; SQLite
+            # accepts both. Stringifying here breaks PG with `asyncpg.exceptions.DataError`.
             cycle_record = {
                 "bot_id": self._bot_id,
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(timezone.utc),
                 "indicators": market_data.indicators,
                 "signals": [s.to_dict() for s in signals],
                 "conviction": conviction.to_dict(),

@@ -113,13 +113,29 @@ class HyperliquidAdapter(ExchangeAdapter):
         testnet: bool = False,
         subaccount_address: str | None = None,
     ) -> None:
-        # Read from env if not explicitly passed
-        wallet_address = wallet_address or os.environ.get("HYPERLIQUID_WALLET_ADDRESS")
-        private_key = private_key or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
-
-        # Testnet from env var or paper_trading_mode feature flag
+        # Resolve testnet FIRST so credential lookup can prefer testnet env vars.
         if not testnet:
             testnet = os.environ.get("HYPERLIQUID_TESTNET", "").lower() in ("true", "1", "yes")
+
+        # Read from env if not explicitly passed. In testnet mode, prefer the
+        # dedicated `HYPERLIQUID_TESTNET_*` vars and fall back to the mainnet
+        # vars for backward compatibility — operators can keep both pairs in
+        # `.env` and the right pair gets picked based on `testnet`. This keeps
+        # mainnet keys away from testnet runs and vice versa.
+        if testnet:
+            wallet_address = (
+                wallet_address
+                or os.environ.get("HYPERLIQUID_TESTNET_WALLET_ADDRESS")
+                or os.environ.get("HYPERLIQUID_WALLET_ADDRESS")
+            )
+            private_key = (
+                private_key
+                or os.environ.get("HYPERLIQUID_TESTNET_PRIVATE_KEY")
+                or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+            )
+        else:
+            wallet_address = wallet_address or os.environ.get("HYPERLIQUID_WALLET_ADDRESS")
+            private_key = private_key or os.environ.get("HYPERLIQUID_PRIVATE_KEY")
 
         config: dict = {
             "enableRateLimit": True,

@@ -30,13 +30,15 @@ class CrossBotSignals:
         conviction: float,
     ) -> None:
         """Publish this bot's latest signal for other bots to read."""
+        # NOTE: timestamp is a raw datetime — see engine/pipeline.py for the
+        # asyncpg TIMESTAMPTZ rationale.
         await self._repo.save_signal({
             "user_id": user_id,
             "bot_id": bot_id,
             "symbol": symbol,
             "direction": direction,
             "conviction": conviction,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc),
         })
 
     async def get_other_bot_signals(

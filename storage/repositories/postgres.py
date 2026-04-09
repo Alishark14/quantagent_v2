@@ -114,8 +114,44 @@ _ALL_TABLES = [
 ]
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now_utc() -> datetime:
+    """Current UTC time as a tz-aware datetime.
+
+    asyncpg requires a real ``datetime`` for ``TIMESTAMPTZ`` columns —
+    passing an ISO-8601 string raises ``DataError``. Use this helper for
+    every timestamp default in this module instead of ``isoformat()``.
+    """
+    return datetime.now(timezone.utc)
+
+
+def _to_datetime(value: object) -> datetime:
+    """Coerce a timestamp input into a tz-aware ``datetime``.
+
+    Accepts:
+      * ``None`` → current UTC time
+      * ``datetime`` → returned as-is (tz-naive values are assumed UTC)
+      * ``str`` → parsed via ``datetime.fromisoformat`` (handles trailing ``Z``)
+
+    Defends ``save_*`` methods against legacy callers that still build
+    timestamps as ISO strings — without this, asyncpg would reject every
+    such write with ``DataError``.
+    """
+    if value is None:
+        return _now_utc()
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        # ``datetime.fromisoformat`` doesn't accept trailing Z prior to 3.11
+        # in some forms; normalize defensively.
+        normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError as e:
+            raise ValueError(f"Invalid timestamp string: {value!r}") from e
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    raise TypeError(
+        f"Timestamp must be datetime, ISO string, or None — got {type(value).__name__}"
+    )
 
 
 def _record_to_dict(record: asyncpg.Record) -> dict:
@@ -155,8 +191,8 @@ class PostgresTradeRepository(TradeRepository):
                 trade.get("size"),
                 trade.get("pnl"),
                 trade.get("r_multiple"),
-                trade.get("entry_time", _now_iso()),
-                trade.get("exit_time"),
+                _to_datetime(trade.get("entry_time")),
+                _to_datetime(trade["exit_time"]) if trade.get("exit_time") else None,
                 trade.get("exit_reason"),
                 trade.get("conviction_score"),
                 trade.get("engine_version"),
@@ -234,7 +270,7 @@ class PostgresCycleRepository(CycleRepository):
                 cycle["bot_id"],
                 cycle["symbol"],
                 cycle["timeframe"],
-                cycle.get("timestamp", _now_iso()),
+                _to_datetime(cycle.get("timestamp")),
                 json.dumps(cycle.get("indicators")) if cycle.get("indicators") else None,
                 json.dumps(cycle.get("signals")) if cycle.get("signals") else None,
                 json.dumps(cycle.get("conviction")) if cycle.get("conviction") else None,
@@ -284,7 +320,7 @@ class PostgresRuleRepository(RuleRepository):
                 rule["rule_text"],
                 rule.get("score", 0),
                 rule.get("active", True),
-                rule.get("created_at", _now_iso()),
+                _to_datetime(rule.get("created_at")),
             )
         return rule_id
 
@@ -348,7 +384,7 @@ class PostgresBotRepository(BotRepository):
                 bot["exchange"],
                 bot.get("status", "active"),
                 json.dumps(bot.get("config")) if bot.get("config") else None,
-                bot.get("created_at", _now_iso()),
+                _to_datetime(bot.get("created_at")),
                 None,
                 is_shadow,
                 mode,
@@ -442,7 +478,7 @@ class PostgresCrossBotRepository(CrossBotRepository):
                 signal["direction"],
                 signal["conviction"],
                 signal["bot_id"],
-                signal.get("timestamp", _now_iso()),
+                _to_datetime(signal.get("timestamp")),
             )
 
     async def get_recent_signals(

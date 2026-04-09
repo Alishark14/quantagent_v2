@@ -49,6 +49,15 @@ def _bot_to_response(bot: dict, last_cycle: dict | None = None) -> BotResponse:
     else:
         health = health_raw
 
+    # ``created_at`` may arrive as a datetime (from asyncpg / new code paths)
+    # or a string (from SQLite / legacy callers). Normalize to ISO-8601 so
+    # the Pydantic ``str`` field accepts it.
+    created_at_raw = bot.get("created_at", "")
+    if isinstance(created_at_raw, datetime):
+        created_at_str = created_at_raw.isoformat()
+    else:
+        created_at_str = created_at_raw or ""
+
     return BotResponse(
         id=bot["id"],
         user_id=bot.get("user_id", ""),
@@ -57,7 +66,7 @@ def _bot_to_response(bot: dict, last_cycle: dict | None = None) -> BotResponse:
         exchange=bot.get("exchange", ""),
         status=bot.get("status", "unknown"),
         config=config,
-        created_at=bot.get("created_at", ""),
+        created_at=created_at_str,
         last_health=health,
         last_cycle=last_cycle,
     )
@@ -75,7 +84,8 @@ async def create_bot(
     bot_repo: BotRepository = Depends(get_bot_repo),
 ) -> BotResponse:
     """Create a new bot configuration. Does NOT start the bot."""
-    now = datetime.now(timezone.utc).isoformat()
+    # Raw datetime — postgres TIMESTAMPTZ via asyncpg refuses ISO strings.
+    now = datetime.now(timezone.utc)
     bot_id = str(uuid4())
 
     config = {

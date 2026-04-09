@@ -204,6 +204,41 @@ class TestCycleRepository:
         assert len(bot1_cycles) == 1
         assert bot1_cycles[0]["symbol"] == "BTC-USDC"
 
+    @pytest.mark.asyncio
+    async def test_save_cycle_with_datetime_timestamp(self, repos):
+        """Cycle saves accept a tz-aware ``datetime`` for ``timestamp``.
+
+        Regression: ``engine/pipeline.py`` used to stringify the timestamp via
+        ``isoformat()``, which SQLite happily coerces but PostgreSQL+asyncpg
+        rejects with ``DataError`` (asyncpg requires a real ``datetime`` for
+        ``TIMESTAMPTZ``). The pipeline was changed to pass a raw datetime
+        object; this test pins that contract on the SQLite side so the cycle
+        save remains backend-agnostic.
+        """
+        from datetime import datetime, timezone
+
+        ts = datetime(2026, 4, 9, 16, 43, 8, tzinfo=timezone.utc)
+        cycle_id = await repos.cycles.save_cycle({
+            "bot_id": "bot-dt",
+            "symbol": "BTC-USDC",
+            "timeframe": "1h",
+            "timestamp": ts,
+            "action": "SKIP",
+            "conviction_score": 0.42,
+            "indicators": {"rsi": 60.0},
+        })
+        assert cycle_id
+
+        recent = await repos.cycles.get_recent_cycles("bot-dt", limit=1)
+        assert len(recent) == 1
+        # SQLite stores datetimes as the str(dt) representation; assert the
+        # round-trip preserves the wall-clock instant.
+        stored_ts = recent[0]["timestamp"]
+        assert "2026-04-09" in str(stored_ts)
+        assert "16:43:08" in str(stored_ts)
+        assert recent[0]["action"] == "SKIP"
+        assert recent[0]["indicators_json"] == {"rsi": 60.0}
+
 
 # ---------------------------------------------------------------------------
 # RuleRepository

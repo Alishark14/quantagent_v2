@@ -323,3 +323,93 @@ class TestFlowData:
         adapter._exchange.fetch_open_interest.side_effect = Exception("fail")
         oi = await adapter.get_open_interest("BTC-USDC")
         assert oi is None
+
+
+# ---------------------------------------------------------------------------
+# Credential resolution — testnet vs mainnet env var precedence
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialResolution:
+    """Verify the constructor reads the right env vars per mode.
+
+    Regression: testnet runs used to share mainnet credentials because the
+    constructor read ``HYPERLIQUID_WALLET_ADDRESS`` / ``HYPERLIQUID_PRIVATE_KEY``
+    unconditionally. Operators wanted dedicated testnet vars so the wrong key
+    can never be sent to the wrong endpoint.
+    """
+
+    def test_testnet_prefers_dedicated_env_vars(self, monkeypatch) -> None:
+        """When ``testnet=True`` and BOTH pairs are set, the testnet pair wins."""
+        monkeypatch.setenv("HYPERLIQUID_WALLET_ADDRESS", "0xMAINNET_WALLET")
+        monkeypatch.setenv("HYPERLIQUID_PRIVATE_KEY", "MAINNET_KEY")
+        monkeypatch.setenv("HYPERLIQUID_TESTNET_WALLET_ADDRESS", "0xTESTNET_WALLET")
+        monkeypatch.setenv("HYPERLIQUID_TESTNET_PRIVATE_KEY", "TESTNET_KEY")
+
+        captured: dict = {}
+        with patch("exchanges.hyperliquid.ccxt") as mock_ccxt:
+            def _capture(config):
+                captured.update(config)
+                return MagicMock()
+            mock_ccxt.hyperliquid.side_effect = _capture
+            HyperliquidAdapter(testnet=True)
+
+        assert captured["walletAddress"] == "0xTESTNET_WALLET"
+        assert captured["privateKey"] == "TESTNET_KEY"
+
+    def test_testnet_falls_back_to_mainnet_vars(self, monkeypatch) -> None:
+        """If only the mainnet pair is set, testnet mode falls back to it (BC)."""
+        monkeypatch.delenv("HYPERLIQUID_TESTNET_WALLET_ADDRESS", raising=False)
+        monkeypatch.delenv("HYPERLIQUID_TESTNET_PRIVATE_KEY", raising=False)
+        monkeypatch.setenv("HYPERLIQUID_WALLET_ADDRESS", "0xMAINNET_WALLET")
+        monkeypatch.setenv("HYPERLIQUID_PRIVATE_KEY", "MAINNET_KEY")
+
+        captured: dict = {}
+        with patch("exchanges.hyperliquid.ccxt") as mock_ccxt:
+            def _capture(config):
+                captured.update(config)
+                return MagicMock()
+            mock_ccxt.hyperliquid.side_effect = _capture
+            HyperliquidAdapter(testnet=True)
+
+        assert captured["walletAddress"] == "0xMAINNET_WALLET"
+        assert captured["privateKey"] == "MAINNET_KEY"
+
+    def test_live_mode_ignores_testnet_vars(self, monkeypatch) -> None:
+        """Live mode reads ONLY the mainnet vars even if testnet vars are set."""
+        monkeypatch.setenv("HYPERLIQUID_WALLET_ADDRESS", "0xMAINNET_WALLET")
+        monkeypatch.setenv("HYPERLIQUID_PRIVATE_KEY", "MAINNET_KEY")
+        monkeypatch.setenv("HYPERLIQUID_TESTNET_WALLET_ADDRESS", "0xTESTNET_WALLET")
+        monkeypatch.setenv("HYPERLIQUID_TESTNET_PRIVATE_KEY", "TESTNET_KEY")
+        monkeypatch.delenv("HYPERLIQUID_TESTNET", raising=False)
+
+        captured: dict = {}
+        with patch("exchanges.hyperliquid.ccxt") as mock_ccxt:
+            def _capture(config):
+                captured.update(config)
+                return MagicMock()
+            mock_ccxt.hyperliquid.side_effect = _capture
+            HyperliquidAdapter(testnet=False)
+
+        assert captured["walletAddress"] == "0xMAINNET_WALLET"
+        assert captured["privateKey"] == "MAINNET_KEY"
+
+    def test_explicit_kwargs_override_env(self, monkeypatch) -> None:
+        """Explicitly-passed wallet/key override the env-var resolution path."""
+        monkeypatch.setenv("HYPERLIQUID_TESTNET_WALLET_ADDRESS", "0xTESTNET_WALLET")
+        monkeypatch.setenv("HYPERLIQUID_TESTNET_PRIVATE_KEY", "TESTNET_KEY")
+
+        captured: dict = {}
+        with patch("exchanges.hyperliquid.ccxt") as mock_ccxt:
+            def _capture(config):
+                captured.update(config)
+                return MagicMock()
+            mock_ccxt.hyperliquid.side_effect = _capture
+            HyperliquidAdapter(
+                wallet_address="0xEXPLICIT",
+                private_key="EXPLICIT_KEY",
+                testnet=True,
+            )
+
+        assert captured["walletAddress"] == "0xEXPLICIT"
+        assert captured["privateKey"] == "EXPLICIT_KEY"

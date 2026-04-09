@@ -85,7 +85,8 @@ _DEV_RULES = [
 async def seed_dev_data() -> None:
     """Seed the database with test data for local development."""
     repos = await get_repositories()
-    now = datetime.now(timezone.utc).isoformat()
+    # Raw datetime — postgres TIMESTAMPTZ via asyncpg refuses ISO strings.
+    now = datetime.now(timezone.utc)
 
     bot_count = 0
     for bot_cfg in _DEV_BOTS:
