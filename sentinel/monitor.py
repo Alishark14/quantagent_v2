@@ -103,7 +103,7 @@ class SentinelMonitor:
         threshold: float = 0.7,
         cooldown_seconds: int | None = None,
         daily_budget: int | None = None,
-        candle_window: int = 30,
+        candle_window: int = 50,
         cache=None,
         macro_regime_path: Path | str = _DEFAULT_MACRO_REGIME_PATH,
         clock=None,
@@ -303,8 +303,16 @@ class SentinelMonitor:
         candles = await self._adapter.fetch_ohlcv(
             self._symbol, self._timeframe, limit=self._candle_window,
         )
-        if not candles or len(candles) < 10:
-            logger.debug(f"Sentinel: insufficient candles for {self._symbol}")
+        # Indicator computation (compute_all_indicators) crashes on
+        # short windows because MACD's slow-EMA needs ~26 bars and the
+        # ADX/ATR smoothers want ~14 each. 35 gives a safe margin and
+        # protects against transient API hiccups (rate limits, fresh
+        # listings, exchange returning fewer candles than requested).
+        if not candles or len(candles) < 35:
+            logger.warning(
+                f"Sentinel: insufficient candles for {self._symbol} "
+                f"(got {len(candles) if candles else 0}, need ≥35); skipping check"
+            )
             return 0.0, []
 
         # Candle-close detection — every new candle is a fresh chance, so
