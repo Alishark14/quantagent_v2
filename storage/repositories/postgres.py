@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS trades (
     conviction_score DOUBLE PRECISION,
     engine_version TEXT,
     status TEXT NOT NULL DEFAULT 'open',
-    forward_max_r DOUBLE PRECISION
+    forward_max_r DOUBLE PRECISION,
+    is_shadow BOOLEAN NOT NULL DEFAULT FALSE
 );
 """
 
@@ -59,7 +60,8 @@ CREATE TABLE IF NOT EXISTS cycles (
     signals_json JSONB,
     conviction_json JSONB,
     action TEXT,
-    conviction_score DOUBLE PRECISION
+    conviction_score DOUBLE PRECISION,
+    is_shadow BOOLEAN NOT NULL DEFAULT FALSE
 );
 """
 
@@ -85,7 +87,9 @@ CREATE TABLE IF NOT EXISTS bots (
     status TEXT NOT NULL DEFAULT 'active',
     config_json JSONB,
     created_at TIMESTAMPTZ NOT NULL,
-    last_health JSONB
+    last_health JSONB,
+    is_shadow BOOLEAN NOT NULL DEFAULT FALSE,
+    mode VARCHAR(10) NOT NULL DEFAULT 'live'
 );
 """
 
@@ -137,9 +141,9 @@ class PostgresTradeRepository(TradeRepository):
                    (id, user_id, bot_id, symbol, timeframe, direction,
                     entry_price, exit_price, size, pnl, r_multiple,
                     entry_time, exit_time, exit_reason, conviction_score,
-                    engine_version, status)
+                    engine_version, status, is_shadow)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                           $12, $13, $14, $15, $16, $17)""",
+                           $12, $13, $14, $15, $16, $17, $18)""",
                 trade_id,
                 trade["user_id"],
                 trade["bot_id"],
@@ -157,6 +161,7 @@ class PostgresTradeRepository(TradeRepository):
                 trade.get("conviction_score"),
                 trade.get("engine_version"),
                 trade.get("status", "open"),
+                bool(trade.get("is_shadow", False)),
             )
         return trade_id
 
@@ -167,18 +172,26 @@ class PostgresTradeRepository(TradeRepository):
             )
             return _record_to_dict(row) if row else None
 
-    async def get_open_positions(self, user_id: str, bot_id: str) -> list[dict]:
+    async def get_open_positions(
+        self, user_id: str, bot_id: str, *, include_shadow: bool = False
+    ) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = FALSE"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM trades WHERE user_id = $1 AND bot_id = $2 AND status = 'open'",
+                f"SELECT * FROM trades WHERE user_id = $1 AND bot_id = $2 "
+                f"AND status = 'open'{shadow_clause}",
                 user_id, bot_id,
             )
             return [_record_to_dict(r) for r in rows]
 
-    async def get_trades_by_bot(self, bot_id: str, limit: int = 50) -> list[dict]:
+    async def get_trades_by_bot(
+        self, bot_id: str, limit: int = 50, *, include_shadow: bool = False
+    ) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = FALSE"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM trades WHERE bot_id = $1 ORDER BY entry_time DESC LIMIT $2",
+                f"SELECT * FROM trades WHERE bot_id = $1{shadow_clause} "
+                f"ORDER BY entry_time DESC LIMIT $2",
                 bot_id, limit,
             )
             return [_record_to_dict(r) for r in rows]
@@ -215,8 +228,8 @@ class PostgresCycleRepository(CycleRepository):
                 """INSERT INTO cycles
                    (id, bot_id, symbol, timeframe, timestamp,
                     indicators_json, signals_json, conviction_json,
-                    action, conviction_score)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
+                    action, conviction_score, is_shadow)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
                 cycle_id,
                 cycle["bot_id"],
                 cycle["symbol"],
@@ -227,13 +240,18 @@ class PostgresCycleRepository(CycleRepository):
                 json.dumps(cycle.get("conviction")) if cycle.get("conviction") else None,
                 cycle.get("action"),
                 cycle.get("conviction_score"),
+                bool(cycle.get("is_shadow", False)),
             )
         return cycle_id
 
-    async def get_recent_cycles(self, bot_id: str, limit: int = 5) -> list[dict]:
+    async def get_recent_cycles(
+        self, bot_id: str, limit: int = 5, *, include_shadow: bool = False
+    ) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = FALSE"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM cycles WHERE bot_id = $1 ORDER BY timestamp DESC LIMIT $2",
+                f"SELECT * FROM cycles WHERE bot_id = $1{shadow_clause} "
+                f"ORDER BY timestamp DESC LIMIT $2",
                 bot_id, limit,
             )
         results = [_record_to_dict(r) for r in rows]
@@ -315,12 +333,14 @@ class PostgresBotRepository(BotRepository):
 
     async def save_bot(self, bot: dict) -> str:
         bot_id = bot.get("id") or str(uuid4())
+        mode = bot.get("mode", "live")
+        is_shadow = bool(bot.get("is_shadow") or mode == "shadow")
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO bots
                    (id, user_id, symbol, timeframe, exchange, status,
-                    config_json, created_at, last_health)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    config_json, created_at, last_health, is_shadow, mode)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
                 bot_id,
                 bot["user_id"],
                 bot["symbol"],
@@ -330,6 +350,8 @@ class PostgresBotRepository(BotRepository):
                 json.dumps(bot.get("config")) if bot.get("config") else None,
                 bot.get("created_at", _now_iso()),
                 None,
+                is_shadow,
+                mode,
             )
         return bot_id
 
@@ -360,10 +382,25 @@ class PostgresBotRepository(BotRepository):
                 row["last_health"] = json.loads(row["last_health"])
         return results
 
-    async def get_active_bots(self) -> list[dict]:
+    async def get_active_bots(self, *, include_shadow: bool = False) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = FALSE"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM bots WHERE status = $1", "active"
+                f"SELECT * FROM bots WHERE status = $1{shadow_clause}", "active"
+            )
+        results = [_record_to_dict(r) for r in rows]
+        for row in results:
+            if row.get("config_json") and isinstance(row["config_json"], str):
+                row["config_json"] = json.loads(row["config_json"])
+            if row.get("last_health") and isinstance(row["last_health"], str):
+                row["last_health"] = json.loads(row["last_health"])
+        return results
+
+    async def get_active_bots_by_mode(self, mode: str) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM bots WHERE status = $1 AND mode = $2",
+                "active", mode,
             )
         results = [_record_to_dict(r) for r in rows]
         for row in results:

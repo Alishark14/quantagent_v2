@@ -47,12 +47,14 @@ class BotRunner:
         llm_provider: LLMProvider,
         event_bus: EventBus,
         bot_manager: BotManager,
+        shadow_mode: bool = False,
     ) -> None:
         self._repos = repos
         self._adapter_factory = adapter_factory
         self._llm_provider = llm_provider
         self._bus = event_bus
         self._bot_manager = bot_manager
+        self._shadow_mode = shadow_mode
 
         self._sentinels: dict[str, SentinelMonitor] = {}
         self._sentinel_tasks: dict[str, asyncio.Task] = {}
@@ -60,6 +62,10 @@ class BotRunner:
         self._bot_configs: dict[str, dict] = {}  # bot_id -> bot dict
         self._symbol_bots: dict[str, set[str]] = {}  # symbol -> set of bot_ids
         self._running = False
+
+    @property
+    def shadow_mode(self) -> bool:
+        return self._shadow_mode
 
     @property
     def is_running(self) -> bool:
@@ -208,11 +214,21 @@ class BotRunner:
         logger.info(f"BotRunner: removed bot {bot_id}")
 
     async def _register_bot(self, bot: dict) -> None:
-        """Register a bot: track it, start sentinel, schedule fallback."""
+        """Register a bot: track it, start sentinel, schedule fallback.
+
+        The bot's ``mode`` field (``"live"`` | ``"shadow"``) is read
+        and threaded through to ``adapter_factory(exchange, mode=mode)``
+        so each sentinel gets the adapter type that matches the bot it
+        belongs to. In a single-mode runner this just echoes the
+        process-wide mode (because main.py filters bots by mode at
+        load time); in a mixed-mode runner (e.g. the integration test)
+        each sentinel gets the right adapter regardless.
+        """
         bot_id = bot["id"]
         symbol = bot.get("symbol", "BTC-USDC")
         timeframe = bot.get("timeframe", "1h")
         exchange = bot.get("exchange", "hyperliquid")
+        mode = bot.get("mode", "live")
 
         self._bot_configs[bot_id] = bot
 
@@ -223,7 +239,7 @@ class BotRunner:
 
         # Start sentinel for this symbol if not already running
         if symbol not in self._sentinels:
-            adapter = self._adapter_factory(exchange)
+            adapter = self._adapter_factory(exchange, mode=mode)
             sentinel = SentinelMonitor(
                 adapter=adapter,
                 event_bus=self._bus,

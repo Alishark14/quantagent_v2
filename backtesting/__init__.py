@@ -10,15 +10,6 @@ from backtesting.forward_path import ForwardPathLoader
 from backtesting.metrics import BacktestMetrics, calculate_metrics
 from backtesting.mock_signals import MockSignalProducer
 from backtesting.reporter import generate_html_report, generate_json_report
-from backtesting.shadow import (
-    ShadowConfig,
-    configure_shadow,
-    disable_shadow_mode,
-    enable_shadow_mode,
-    ensure_shadow_db,
-    get_shadow_db_url,
-    is_shadow_mode,
-)
 from backtesting.sim_exchange import AssetMeta, SimulatedExchangeAdapter
 from backtesting.sim_executor import SimExecutor
 from backtesting.tier2_replay import (
@@ -60,13 +51,6 @@ __all__ = [
     "ReplayResult",
     "SweepResult",
     "SweepRow",
-    "ShadowConfig",
-    "configure_shadow",
-    "disable_shadow_mode",
-    "enable_shadow_mode",
-    "ensure_shadow_db",
-    "get_shadow_db_url",
-    "is_shadow_mode",
     # Eval framework
     "AutoMiner",
     "EvalOutput",

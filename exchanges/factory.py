@@ -1,22 +1,46 @@
-"""Exchange adapter factory: get_adapter(name) with singleton cache.
+"""Exchange adapter factory: ``get_adapter(name, mode="live")`` with singleton cache.
 
-When shadow mode is active (see ``backtesting.shadow.is_shadow_mode``),
-``get_adapter`` returns a ``SimulatedExchangeAdapter`` regardless of
-which exchange name was requested. This is the central swap point that
-makes Tier 4 shadow mode transparent to the rest of the codebase: every
-existing call site (``BotRunner``, executor, sentinel, etc.) keeps
-asking for ``get_adapter("hyperliquid")`` and gets back a fake exchange
-without any code changes.
+The factory is the central swap point that lets the rest of the
+codebase ask for ``get_adapter("hyperliquid")`` and never know whether
+it got back a real venue or a virtualised shadow exchange. As of the
+shadow-mode redesign (Task 3 of the Shadow Redesign sprint), the swap
+is driven by an explicit ``mode`` argument instead of a process-global
+``is_shadow_mode()`` env-var check — this lets a single BotRunner
+manage live and shadow bots side-by-side from one process.
 
-Shadow instances live in their own cache namespace so toggling shadow
-mode on / off in tests doesn't poison the live singleton cache.
+Per-mode behaviour:
+
+* ``mode="live"``  → returns the registered adapter from
+  ``cls._instances`` (cached singleton). Identical to the pre-redesign
+  behaviour. Construction errors propagate to the caller.
+
+* ``mode="shadow"`` → returns a ``SimulatedExchangeAdapter`` from
+  ``cls._shadow_instances``. The sim is constructed with a real,
+  fully-credentialed live adapter as its ``data_adapter`` so that
+  Sentinel + signal agents see real OHLCV / orderbook / funding /
+  open-interest data; ORDER methods stay 100 % on the virtual portfolio.
+  Before the live adapter is handed to the sim, its **signing key**
+  (private key + ccxt secret) is scrubbed to ``None`` as defense in
+  depth — even if some untested code path leaks an order through to the
+  data delegate, the request fails with an auth error rather than
+  placing a real trade. The wallet address is intentionally **preserved**
+  so that read-only authenticated methods (``fetch_user_fees``, account
+  metadata) still work.
+
+Live and shadow caches are kept in separate dicts so toggling between
+modes (or constructing both kinds of adapter for different bots within
+the same process) doesn't poison the other namespace.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 from exchanges.base import ExchangeAdapter
+
+logger = logging.getLogger(__name__)
 
 
 # Default starting balance for the shadow simulated exchange. Can be
@@ -25,8 +49,80 @@ from exchanges.base import ExchangeAdapter
 _DEFAULT_SHADOW_BALANCE = 10_000.0
 
 
+# Attribute names that may hold a live signing key on the underlying
+# ccxt.Exchange instance. ``privateKey`` is what Hyperliquid uses;
+# ``secret`` is the standard ccxt name on most other venues. Both are
+# nulled in shadow mode. ``apiKey`` is intentionally NOT scrubbed —
+# without a paired ``secret`` no signed request can succeed, and some
+# venues use ``apiKey`` alone for read-only metadata.
+_CCXT_SIGNING_ATTRS: tuple[str, ...] = ("privateKey", "secret")
+
+# Attribute names that may hold a signing key directly on the
+# ExchangeAdapter wrapper class itself, in case a future adapter stores
+# its credentials outside the inner ccxt object.
+_ADAPTER_SIGNING_ATTRS: tuple[str, ...] = (
+    "_private_key",
+    "private_key",
+    "_secret",
+)
+
+
+def _scrub_signing_keys(adapter: ExchangeAdapter) -> None:
+    """Null out the signing key on a live adapter so it cannot place orders.
+
+    This is the defense-in-depth half of shadow mode: ``ExchangeFactory``
+    already wraps the live adapter in a ``SimulatedExchangeAdapter`` that
+    keeps every order method on the virtual portfolio, but if some
+    future refactor accidentally lets an order method through to the
+    inner data delegate, the scrubbed key forces an auth failure
+    instead of letting a real trade through.
+
+    Both layers are scrubbed:
+
+    * The inner ``ccxt.Exchange`` instance (``adapter._exchange``) — its
+      ``privateKey`` and ``secret`` attributes are set to ``None``.
+    * The ``ExchangeAdapter`` wrapper itself — any attribute matching
+      ``_private_key`` / ``private_key`` / ``_secret`` is also nulled.
+
+    The wallet address (``walletAddress`` on the ccxt object, plus any
+    adapter-level wallet attribute) is **never** touched, because it
+    remains a load-bearing input to authenticated read-only methods
+    like ``fetch_user_fees`` and to position-metadata lookups.
+    """
+    inner = getattr(adapter, "_exchange", None)
+    if inner is not None:
+        for attr in _CCXT_SIGNING_ATTRS:
+            if getattr(inner, attr, None) is not None:
+                try:
+                    setattr(inner, attr, None)
+                except Exception:
+                    # Some ccxt classes use __slots__ or properties; if
+                    # we can't write the attribute we just skip it. The
+                    # SimulatedExchangeAdapter still owns every order
+                    # method, so this is best-effort hardening.
+                    logger.debug(
+                        f"shadow factory: could not scrub {attr} on inner ccxt "
+                        f"object for {type(adapter).__name__}"
+                    )
+
+    for attr in _ADAPTER_SIGNING_ATTRS:
+        if getattr(adapter, attr, None) is not None:
+            try:
+                setattr(adapter, attr, None)
+            except Exception:
+                logger.debug(
+                    f"shadow factory: could not scrub {attr} on "
+                    f"{type(adapter).__name__}"
+                )
+
+
 class ExchangeFactory:
-    """Singleton-cached factory for exchange adapters."""
+    """Singleton-cached factory for exchange adapters.
+
+    Live and shadow instances are cached in separate dicts keyed by
+    ``name``. ``reset()`` clears everything; ``reset_shadow_cache()``
+    clears only the shadow namespace.
+    """
 
     _instances: dict[str, ExchangeAdapter] = {}
     _shadow_instances: dict[str, ExchangeAdapter] = {}
@@ -38,24 +134,36 @@ class ExchangeFactory:
         cls._registry[name] = adapter_class
 
     @classmethod
-    def get_adapter(cls, name: str, **kwargs: Any) -> ExchangeAdapter:
+    def get_adapter(
+        cls, name: str, mode: str = "live", **kwargs: Any
+    ) -> ExchangeAdapter:
         """Get or create a singleton adapter instance.
 
-        In shadow mode, returns a cached ``SimulatedExchangeAdapter``
-        keyed by ``name`` so different requested exchanges still get
-        their own sim instances (matters when a portfolio backtest runs
-        the same engine against multiple venues simultaneously).
+        Args:
+            name: Registered exchange name (e.g. ``"hyperliquid"``).
+            mode: ``"live"`` (default) or ``"shadow"``. Shadow returns
+                a ``SimulatedExchangeAdapter`` whose ``data_adapter`` is
+                a real adapter with its signing key scrubbed.
+            **kwargs: Forwarded to the real-adapter constructor (live
+                mode AND the data delegate built in shadow mode).
+                ``initial_balance`` is consumed by the shadow path and
+                NOT forwarded to the live constructor.
 
-        ``kwargs`` are forwarded to the real-adapter constructor only;
-        the shadow path ignores them except for ``initial_balance``.
+        Returns:
+            The cached adapter instance for ``(name, mode)``.
+
+        Raises:
+            ValueError: in live mode when ``name`` isn't registered.
+                (Shadow mode falls back to a sim with ``data_adapter=None``
+                so unregistered exchanges still get a usable testbed.)
         """
-        # ── Shadow path ──
-        # Imported lazily to avoid a hard dependency cycle
-        # (shadow.py uses no exchanges code).
-        from backtesting.shadow import is_shadow_mode
+        if mode == "shadow":
+            return cls._build_shadow_adapter(name, **kwargs)
 
-        if is_shadow_mode():
-            return cls._get_shadow_adapter(name, **kwargs)
+        if mode != "live":
+            raise ValueError(
+                f"Unknown adapter mode: {mode!r} (expected 'live' or 'shadow')"
+            )
 
         # ── Live path ──
         if name in cls._instances:
@@ -67,42 +175,50 @@ class ExchangeFactory:
         return instance
 
     @classmethod
-    def _get_shadow_adapter(cls, name: str, **kwargs: Any) -> ExchangeAdapter:
+    def _build_shadow_adapter(
+        cls, name: str, **kwargs: Any
+    ) -> ExchangeAdapter:
+        """Construct (or fetch from cache) a shadow adapter for ``name``.
+
+        Builds the real live adapter, scrubs its signing key, and wraps
+        it as the ``data_adapter`` of a ``SimulatedExchangeAdapter`` so
+        that read-only data calls go to the real venue while order
+        methods stay on the virtual portfolio. If the live adapter
+        constructor raises (typically a credentials problem in dev),
+        the failure is logged at ERROR level and a sim with
+        ``data_adapter=None`` is returned — the operator will then see
+        an explicit ``RuntimeError`` on the first ``fetch_ohlcv`` call,
+        which is the correct loud failure mode.
+        """
         if name in cls._shadow_instances:
             return cls._shadow_instances[name]
+
         # Lazy import — backtesting depends on engine, but engine
         # imports the factory. Pulling sim_exchange in at module load
         # would create a hot import cycle.
         from backtesting.sim_exchange import SimulatedExchangeAdapter
 
-        import os
         balance = float(
-            kwargs.get("initial_balance")
+            kwargs.pop("initial_balance", None)
             or os.environ.get("QUANTAGENT_SHADOW_BALANCE")
             or _DEFAULT_SHADOW_BALANCE
         )
 
-        # Build a real adapter to delegate read-only data calls (ohlcv,
-        # ticker, orderbook, funding, oi, meta) to a live venue. Sentinel
-        # + signal agents need real market state in shadow mode; only the
-        # ORDER methods should be virtualised. If the requested exchange
-        # isn't in the registry, fall back to a sim with no data delegate
-        # — the caller will hit the explicit RuntimeError on first
-        # fetch_ohlcv, which is the correct failure mode.
         data_adapter: ExchangeAdapter | None = None
         if name in cls._registry:
             try:
                 data_adapter = cls._registry[name](**kwargs)
+                _scrub_signing_keys(data_adapter)
             except Exception:
                 # Credential / config error constructing the real adapter
                 # in shadow mode is non-fatal: log and continue with a
                 # data-less sim. The runner will surface the exact failure
                 # when something tries to fetch data.
-                import logging
-                logging.getLogger(__name__).exception(
+                logger.exception(
                     f"shadow factory: failed to construct data delegate "
                     f"for {name}; sim adapter will have no data source"
                 )
+                data_adapter = None
 
         instance = SimulatedExchangeAdapter(
             initial_balance=balance,
@@ -122,5 +238,5 @@ class ExchangeFactory:
     @classmethod
     def reset_shadow_cache(cls) -> None:
         """Clear only the shadow-instance cache. Used in tests when
-        toggling shadow mode within a single process."""
+        rebuilding shadow adapters within a single process."""
         cls._shadow_instances.clear()

@@ -57,10 +57,10 @@ def test_factory_returns_traderbot_for_symbol():
     """The whole reason this factory exists: turn (symbol, bot_id) into
     a fully-wired TraderBot that BotManager can `await bot.run()`."""
     bus = InProcessBus()
-    captured: list[str] = []
+    captured: list[tuple[str, str]] = []
 
-    def adapter_factory(exchange: str):
-        captured.append(exchange)
+    def adapter_factory(exchange: str, mode: str = "live"):
+        captured.append((exchange, mode))
         return _make_adapter_stub()
 
     factory = _make_bot_factory(
@@ -74,8 +74,9 @@ def test_factory_returns_traderbot_for_symbol():
     bot = factory("BTC-USDC", "test-bot-001")
     assert isinstance(bot, TraderBot)
     assert bot.bot_id == "test-bot-001"
-    # adapter_factory was called for the bot's exchange (default: hyperliquid)
-    assert captured == ["hyperliquid"]
+    # adapter_factory was called for the bot's exchange with the
+    # default mode "live" (no shadow_mode passed to _make_bot_factory)
+    assert captured == [("hyperliquid", "live")]
 
 
 def test_factory_pipeline_carries_symbol_and_bot_id():
@@ -84,7 +85,7 @@ def test_factory_pipeline_carries_symbol_and_bot_id():
     factory = _make_bot_factory(
         repos=_make_repos_stub(),
         llm_provider=_StubLLM(),
-        adapter_factory=lambda _ex: _make_adapter_stub(),
+        adapter_factory=lambda _ex, mode="live": _make_adapter_stub(),
         event_bus=InProcessBus(),
         feature_flags=FeatureFlags(),
     )
@@ -109,7 +110,7 @@ def test_factory_registers_only_enabled_signal_agents(tmp_path):
     factory = _make_bot_factory(
         repos=_make_repos_stub(),
         llm_provider=_StubLLM(),
-        adapter_factory=lambda _ex: _make_adapter_stub(),
+        adapter_factory=lambda _ex, mode="live": _make_adapter_stub(),
         event_bus=InProcessBus(),
         feature_flags=flags,
     )
@@ -128,7 +129,7 @@ def test_factory_calls_adapter_factory_per_invocation():
     re-builds bots mid-process."""
     calls = {"count": 0}
 
-    def adapter_factory(_exchange):
+    def adapter_factory(_exchange, mode: str = "live"):
         calls["count"] += 1
         return _make_adapter_stub()
 
@@ -142,3 +143,24 @@ def test_factory_calls_adapter_factory_per_invocation():
     factory("BTC-USDC", "b1")
     factory("ETH-USDC", "b2")
     assert calls["count"] == 2
+
+
+def test_factory_passes_shadow_mode_to_adapter_factory():
+    """When `_make_bot_factory(shadow_mode=True)` is set, every adapter
+    request from the factory closure must pass `mode='shadow'`."""
+    captured: list[tuple[str, str]] = []
+
+    def adapter_factory(exchange: str, mode: str = "live"):
+        captured.append((exchange, mode))
+        return _make_adapter_stub()
+
+    factory = _make_bot_factory(
+        repos=_make_repos_stub(),
+        llm_provider=_StubLLM(),
+        adapter_factory=adapter_factory,
+        event_bus=InProcessBus(),
+        feature_flags=FeatureFlags(),
+        shadow_mode=True,
+    )
+    factory("BTC-USDC", "shadow-bot-1")
+    assert captured == [("hyperliquid", "shadow")]

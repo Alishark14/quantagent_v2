@@ -19,21 +19,31 @@ from typing import Callable
 
 
 def _setup_logging() -> None:
-    """Configure structured logging."""
+    """Configure structured logging.
+
+    ``force=True`` is critical: without it, any module imported BEFORE
+    ``_setup_logging`` runs (uvicorn, anthropic SDK, ccxt — all of
+    which install handlers on the root logger at import time) would
+    cause `basicConfig` to silently no-op, and the engine's startup
+    log lines would never appear in stdout. Reinstalling the root
+    handlers via ``force=True`` is the documented escape hatch.
+    """
     level = logging.DEBUG if os.environ.get("VERBOSE") else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
     )
 
 
 def _make_bot_factory(
     repos,
     llm_provider,
-    adapter_factory: Callable[[str], object],
+    adapter_factory: Callable[..., object],
     event_bus,
     feature_flags=None,
+    shadow_mode: bool = False,
 ) -> Callable[[str, str], object]:
     """Build a `(symbol, bot_id) -> TraderBot` factory closure.
 
@@ -80,6 +90,12 @@ def _make_bot_factory(
 
     # Feature flags are shared across bots — load once.
     flags = feature_flags or FeatureFlags()
+    # Process-wide adapter mode. main.py loads bots filtered by mode,
+    # so every bot the factory builds belongs to this mode. The runner
+    # also passes per-bot mode through to its sentinel adapter — these
+    # two paths agree in the production startup flow because of the
+    # mode-based bot filter.
+    factory_mode = "shadow" if shadow_mode else "live"
 
     def factory(symbol: str, bot_id: str):
         # Look up bot config (timeframe, exchange, user_id) from the DB
@@ -101,7 +117,7 @@ def _make_bot_factory(
         user_id = (bot_dict or {}).get("user_id", "system")
 
         config = TradingConfig(symbol=symbol, timeframe=timeframe)
-        adapter = adapter_factory(exchange)
+        adapter = adapter_factory(exchange, mode=factory_mode)
 
         # Data layer
         fetcher = OHLCVFetcher(adapter, config)
@@ -171,10 +187,6 @@ async def _run_server() -> None:
     import uvicorn
 
     from api.app import create_app
-    from backtesting.shadow import (
-        ensure_shadow_db,
-        is_shadow_mode,
-    )
     from engine.bot_manager import BotManager
     from engine.config import FeatureFlags
     from engine.events import create_event_bus
@@ -186,19 +198,21 @@ async def _run_server() -> None:
     from quantagent.version import ENGINE_VERSION
     logger.info(f"QuantAgent {ENGINE_VERSION} starting...")
 
-    # ── Shadow-mode setup (if active) ──
-    # CLI parsing in main() has already flipped QUANTAGENT_SHADOW and
-    # mutated DATABASE_URL via configure_shadow(). All we need to do
-    # here is ensure the shadow DB exists and migrate it before any
-    # repository connection is made.
-    if is_shadow_mode():
+    # ── Detect shadow mode ──
+    # The --shadow CLI flag (handled in main()) sets QUANTAGENT_SHADOW=1.
+    # As of the shadow-mode redesign, this is a SIMPLE PROCESS FLAG —
+    # there's no DATABASE_URL swap, no ensure_shadow_db pre-create, no
+    # configure_shadow side-effects. The shared `quantagent` database
+    # holds both live and shadow rows differentiated by the new
+    # is_shadow / mode columns from Alembic 003. The flag drives:
+    #   1. which bots get loaded (filtered by `mode='shadow'` here)
+    #   2. how the adapter_factory builds adapters (passes mode="shadow")
+    #   3. logging banner so operators see the warning
+    shadow_mode = os.environ.get("QUANTAGENT_SHADOW") == "1"
+    if shadow_mode:
         logger.warning(
-            "⚠️ SHADOW MODE — no real trades will be placed. "
-            "All writes go to the shadow database."
+            "⚠️ SHADOW MODE — loading shadow bots, simulated execution only"
         )
-        shadow_url = os.environ.get("DATABASE_URL", "")
-        if shadow_url:
-            await ensure_shadow_db(shadow_url)
 
     # ── Initialize infrastructure ──
     logger.info("Initializing infrastructure...")
@@ -214,13 +228,13 @@ async def _run_server() -> None:
         )
     llm_provider = ClaudeProvider(api_key=api_key) if api_key else None
 
-    # ── Adapter factory (transparent shadow swap via ExchangeFactory) ──
-    def adapter_factory(exchange: str):
+    # ── Adapter factory (per-bot mode-aware) ──
+    def adapter_factory(exchange: str, mode: str = "live"):
         # Side-effect import: registers HyperliquidAdapter with the
         # ExchangeFactory the first time something asks for an adapter.
         import exchanges.hyperliquid  # noqa: F401
         from exchanges.factory import ExchangeFactory
-        return ExchangeFactory.get_adapter(exchange)
+        return ExchangeFactory.get_adapter(exchange, mode=mode)
 
     # ── Bot factory: wires the full analysis pipeline per symbol ──
     feature_flags = FeatureFlags()
@@ -230,6 +244,7 @@ async def _run_server() -> None:
         adapter_factory=adapter_factory,
         event_bus=event_bus,
         feature_flags=feature_flags,
+        shadow_mode=shadow_mode,
     )
 
     bot_manager = BotManager(
@@ -246,12 +261,15 @@ async def _run_server() -> None:
         llm_provider=llm_provider,
         event_bus=event_bus,
         bot_manager=bot_manager,
+        shadow_mode=shadow_mode,
     )
 
-    # Load active bots from DB so the runner restores state on restart
-    # without requiring re-registration via API.
-    active_bots = await repos.bots.get_active_bots()
-    logger.info(f"Loaded {len(active_bots)} active bots from database")
+    # Load active bots from DB filtered by mode so the runner restores
+    # only the bots that belong to this process's mode. A shadow boot
+    # never sees live bots and vice versa.
+    mode_label = "shadow" if shadow_mode else "live"
+    active_bots = await repos.bots.get_active_bots_by_mode(mode_label)
+    logger.info(f"Loaded {len(active_bots)} {mode_label} bots from database")
     await runner.start_with_bots(active_bots)
 
     # ── Create FastAPI app ──
@@ -345,29 +363,23 @@ def main() -> None:
 
     # ``--shadow`` is global: it applies to any subcommand and is
     # stripped from argv before subcommand dispatch so the existing
-    # positional logic keeps working.
-    shadow_requested = "--shadow" in args
-    if shadow_requested:
+    # positional logic keeps working. The flag is now a SIMPLE PROCESS
+    # MARKER — it sets QUANTAGENT_SHADOW=1 and that's it. There is no
+    # DB URL swap, no config mutation, no shadow-DB pre-create. The
+    # shared `quantagent` database holds both modes via the per-row
+    # is_shadow / mode columns; _run_server() reads the env var, loads
+    # bots filtered by mode, and passes the per-bot mode through to
+    # the adapter factory.
+    if "--shadow" in args:
         args = [a for a in args if a != "--shadow"]
-        from backtesting.shadow import configure_shadow
-
-        # Build a tiny config holder so configure_shadow() has something
-        # to mutate. The runtime config in this CLI is env-var based, so
-        # the env-var side-effects are what actually matter — but we
-        # capture the snapshot for log clarity.
-        class _RuntimeConfig:
-            database_url = os.environ.get("DATABASE_URL", "")
-            shadow_mode = False
-            use_simulated_exchange = False
-
-        configure_shadow(_RuntimeConfig)
+        os.environ["QUANTAGENT_SHADOW"] = "1"
 
     if not args or args[0] in ("--help", "-h"):
         print("QuantAgent v2 — AI-powered trading engine")
         print()
         print("Usage:")
         print("  python -m quantagent run            Start BotRunner + API server")
-        print("  python -m quantagent run --shadow   Same runner, sim exchange + shadow DB")
+        print("  python -m quantagent run --shadow   Load shadow bots, simulated execution")
         print("  python -m quantagent migrate        Run database migrations (Alembic)")
         print("  python -m quantagent seed           Seed dev database with test data")
         print("  python -m quantagent --help         Show this help")

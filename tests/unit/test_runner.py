@@ -107,16 +107,24 @@ def bot_manager(event_bus):
 
 @pytest.fixture
 def adapter_factory():
-    """Returns a factory that creates mock exchange adapters."""
-    adapters: dict[str, MagicMock] = {}
+    """Returns a factory that creates mock exchange adapters.
 
-    def factory(exchange: str) -> MagicMock:
-        if exchange not in adapters:
+    Mirrors the production `adapter_factory` closure in `quantagent/main.py`
+    by accepting an optional `mode` kwarg. Each (exchange, mode) tuple
+    gets its own cached adapter so tests can verify a shadow bot and a
+    live bot for the same exchange receive distinct adapter instances.
+    """
+    adapters: dict[tuple[str, str], MagicMock] = {}
+
+    def factory(exchange: str, mode: str = "live") -> MagicMock:
+        key = (exchange, mode)
+        if key not in adapters:
             adapter = MagicMock()
             adapter.fetch_ohlcv = AsyncMock(return_value=[])
             adapter.get_funding_rate = AsyncMock(return_value=0.0001)
-            adapters[exchange] = adapter
-        return adapters[exchange]
+            adapter._mode = mode
+            adapters[key] = adapter
+        return adapters[key]
 
     return factory
 
@@ -733,3 +741,165 @@ class TestSentinelEscalationWiring:
         assert sentinel.current_threshold() == pytest.approx(baseline)
 
         await runner.stop()
+
+
+# ---------------------------------------------------------------------------
+# Per-bot mode wiring (Task 4 of Shadow Redesign)
+# ---------------------------------------------------------------------------
+
+
+class TestPerBotMode:
+    """The mode field on each bot dict must be threaded through to
+    `adapter_factory(exchange, mode=mode)` so that a shadow bot's
+    sentinel uses the simulated adapter and a live bot's sentinel uses
+    the real adapter, even when both are loaded into the same runner.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shadow_mode_constructor_param_default_false(
+        self, repos, adapter_factory, event_bus, bot_manager
+    ):
+        runner = BotRunner(
+            repos=repos,
+            adapter_factory=adapter_factory,
+            llm_provider=MagicMock(),
+            event_bus=event_bus,
+            bot_manager=bot_manager,
+        )
+        assert runner.shadow_mode is False
+
+    @pytest.mark.asyncio
+    async def test_shadow_mode_constructor_param_true(
+        self, repos, adapter_factory, event_bus, bot_manager
+    ):
+        runner = BotRunner(
+            repos=repos,
+            adapter_factory=adapter_factory,
+            llm_provider=MagicMock(),
+            event_bus=event_bus,
+            bot_manager=bot_manager,
+            shadow_mode=True,
+        )
+        assert runner.shadow_mode is True
+
+    @pytest.mark.asyncio
+    async def test_register_bot_threads_per_bot_mode_to_adapter(
+        self, repos, adapter_factory, event_bus, bot_manager
+    ):
+        """Two bots, two modes, two distinct sentinel adapters."""
+        runner = BotRunner(
+            repos=repos,
+            adapter_factory=adapter_factory,
+            llm_provider=MagicMock(),
+            event_bus=event_bus,
+            bot_manager=bot_manager,
+        )
+
+        live_bot = _make_bot_config(
+            bot_id="live-1", symbol="BTC-USDC",
+        )
+        live_bot["mode"] = "live"
+
+        shadow_bot = _make_bot_config(
+            bot_id="shadow-1", symbol="ETH-USDC",
+        )
+        shadow_bot["mode"] = "shadow"
+
+        await runner.start_with_bots([live_bot, shadow_bot])
+
+        live_sentinel = runner.get_sentinel("BTC-USDC")
+        shadow_sentinel = runner.get_sentinel("ETH-USDC")
+        assert live_sentinel is not None
+        assert shadow_sentinel is not None
+
+        # The fixture's factory caches by (exchange, mode) so a live
+        # adapter and a shadow adapter are guaranteed to be DIFFERENT
+        # objects, and each carries the mode it was built with.
+        assert live_sentinel._adapter._mode == "live"
+        assert shadow_sentinel._adapter._mode == "shadow"
+        assert live_sentinel._adapter is not shadow_sentinel._adapter
+
+        await runner.stop()
+
+    @pytest.mark.asyncio
+    async def test_register_bot_defaults_to_live_when_mode_missing(
+        self, repos, adapter_factory, event_bus, bot_manager
+    ):
+        """Legacy bot dicts without a `mode` key should default to live
+        — backward compatible with rows that pre-date Alembic 003."""
+        runner = BotRunner(
+            repos=repos,
+            adapter_factory=adapter_factory,
+            llm_provider=MagicMock(),
+            event_bus=event_bus,
+            bot_manager=bot_manager,
+        )
+        legacy_bot = _make_bot_config(bot_id="legacy", symbol="SOL-USDC")
+        # No "mode" key on the dict at all
+        assert "mode" not in legacy_bot
+
+        await runner.start_with_bots([legacy_bot])
+        sentinel = runner.get_sentinel("SOL-USDC")
+        assert sentinel is not None
+        assert sentinel._adapter._mode == "live"
+
+        await runner.stop()
+
+    @pytest.mark.asyncio
+    async def test_mixed_mode_runner_uses_real_adapter_classes(
+        self, repos, event_bus, bot_manager
+    ):
+        """End-to-end with the actual `ExchangeFactory` instead of the
+        fixture's MagicMock factory: a shadow bot's sentinel must hold
+        a `SimulatedExchangeAdapter`, a live bot's sentinel must hold
+        the registered live adapter class.
+        """
+        from backtesting.sim_exchange import SimulatedExchangeAdapter
+        from exchanges.factory import ExchangeFactory
+        from tests.test_backtesting.test_shadow import _LiveAdapter
+
+        # Save + restore registry around the test so we don't poison
+        # the suite-wide cache.
+        saved_registry = dict(ExchangeFactory._registry)
+        saved_instances = dict(ExchangeFactory._instances)
+        saved_shadow = dict(ExchangeFactory._shadow_instances)
+        try:
+            ExchangeFactory.reset()
+            ExchangeFactory.register("hyperliquid", _LiveAdapter)
+
+            def real_adapter_factory(exchange: str, mode: str = "live"):
+                return ExchangeFactory.get_adapter(exchange, mode=mode)
+
+            runner = BotRunner(
+                repos=repos,
+                adapter_factory=real_adapter_factory,
+                llm_provider=MagicMock(),
+                event_bus=event_bus,
+                bot_manager=bot_manager,
+            )
+
+            live_bot = _make_bot_config(bot_id="live-1", symbol="BTC-USDC")
+            live_bot["mode"] = "live"
+            shadow_bot = _make_bot_config(bot_id="shadow-1", symbol="ETH-USDC")
+            shadow_bot["mode"] = "shadow"
+
+            await runner.start_with_bots([live_bot, shadow_bot])
+
+            live_sentinel = runner.get_sentinel("BTC-USDC")
+            shadow_sentinel = runner.get_sentinel("ETH-USDC")
+            assert live_sentinel is not None and shadow_sentinel is not None
+
+            # The shadow bot's sentinel got a SimulatedExchangeAdapter
+            assert isinstance(shadow_sentinel._adapter, SimulatedExchangeAdapter)
+            # The live bot's sentinel got the registered live class
+            assert isinstance(live_sentinel._adapter, _LiveAdapter)
+            assert not isinstance(live_sentinel._adapter, SimulatedExchangeAdapter)
+
+            await runner.stop()
+        finally:
+            ExchangeFactory._instances.clear()
+            ExchangeFactory._instances.update(saved_instances)
+            ExchangeFactory._shadow_instances.clear()
+            ExchangeFactory._shadow_instances.update(saved_shadow)
+            ExchangeFactory._registry.clear()
+            ExchangeFactory._registry.update(saved_registry)

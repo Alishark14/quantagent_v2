@@ -1,20 +1,19 @@
-"""Unit tests for shadow mode (Tier 4 backtesting)."""
+"""Unit tests for the ExchangeFactory shadow-mode swap.
+
+The legacy shadow infrastructure (`configure_shadow`, `ensure_shadow_db`,
+`is_shadow_mode`, `get_shadow_db_url`, `ShadowConfig`) was deleted in
+Task 4 of the Shadow Redesign sprint. The remaining tests cover the
+explicit `mode="shadow"` path on `ExchangeFactory.get_adapter` and the
+defense-in-depth signing-key scrubbing on the live adapter that gets
+wrapped as the shadow sim's data delegate.
+"""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 
 import pytest
 
-from backtesting.shadow import (
-    ShadowConfig,
-    configure_shadow,
-    disable_shadow_mode,
-    enable_shadow_mode,
-    get_shadow_db_url,
-    is_shadow_mode,
-)
 from backtesting.sim_exchange import SimulatedExchangeAdapter
 from engine.types import AdapterCapabilities, OrderResult, Position
 from exchanges.base import ExchangeAdapter
@@ -28,16 +27,16 @@ from exchanges.factory import ExchangeFactory
 
 @pytest.fixture(autouse=True)
 def restore_environment():
-    """Snapshot env vars and factory state; restore after every test.
+    """Snapshot factory state and shadow-balance env var; restore after each test.
 
-    Without this, a test that flips QUANTAGENT_SHADOW or mutates the
-    ExchangeFactory cache would poison every subsequent test in the
-    suite (factory reset clears _registry, so the real Hyperliquid
-    adapter would silently disappear).
+    The factory `reset()` calls inside individual tests would otherwise
+    wipe the real Hyperliquid adapter registration that conftest set up
+    for the rest of the suite. Snapshotting + restoring keeps each test
+    isolated.
     """
     saved_env = {
         k: os.environ.get(k)
-        for k in ("QUANTAGENT_SHADOW", "DATABASE_URL", "QUANTAGENT_SHADOW_BALANCE")
+        for k in ("QUANTAGENT_SHADOW_BALANCE",)
     }
     saved_instances = dict(ExchangeFactory._instances)
     saved_shadow = dict(ExchangeFactory._shadow_instances)
@@ -113,175 +112,6 @@ class _LiveAdapter(ExchangeAdapter):
 
 
 # ---------------------------------------------------------------------------
-# is_shadow_mode / enable / disable
-# ---------------------------------------------------------------------------
-
-
-def test_shadow_mode_off_by_default():
-    disable_shadow_mode()
-    assert is_shadow_mode() is False
-
-
-def test_shadow_mode_on_when_env_var_set():
-    os.environ["QUANTAGENT_SHADOW"] = "1"
-    assert is_shadow_mode() is True
-
-
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", "Y", "t"])
-def test_truthy_env_values_enable_shadow(value):
-    os.environ["QUANTAGENT_SHADOW"] = value
-    assert is_shadow_mode() is True
-
-
-@pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "anything else"])
-def test_falsy_env_values_keep_shadow_off(value):
-    os.environ["QUANTAGENT_SHADOW"] = value
-    assert is_shadow_mode() is False
-
-
-def test_enable_and_disable_shadow():
-    disable_shadow_mode()
-    assert is_shadow_mode() is False
-    enable_shadow_mode()
-    assert is_shadow_mode() is True
-    disable_shadow_mode()
-    assert is_shadow_mode() is False
-
-
-# ---------------------------------------------------------------------------
-# get_shadow_db_url
-# ---------------------------------------------------------------------------
-
-
-def test_postgres_url_appends_shadow_suffix():
-    url = "postgresql://user:pass@host:5432/quantagent"
-    assert (
-        get_shadow_db_url(url)
-        == "postgresql://user:pass@host:5432/quantagent_shadow"
-    )
-
-
-def test_postgres_url_preserves_query_string():
-    url = "postgresql://user:pass@host/quantagent?sslmode=require"
-    assert (
-        get_shadow_db_url(url)
-        == "postgresql://user:pass@host/quantagent_shadow?sslmode=require"
-    )
-
-
-def test_postgres_url_with_asyncpg_driver_suffix():
-    url = "postgresql+asyncpg://user:pass@host:5432/quantagent"
-    assert (
-        get_shadow_db_url(url)
-        == "postgresql+asyncpg://user:pass@host:5432/quantagent_shadow"
-    )
-
-
-def test_sqlite_file_url_suffixes_filename():
-    url = "sqlite:///./dev.db"
-    out = get_shadow_db_url(url)
-    assert out.endswith("dev_shadow.db")
-
-
-def test_sqlite_aiosqlite_url():
-    url = "sqlite+aiosqlite:///dev.db"
-    out = get_shadow_db_url(url)
-    assert out.endswith("dev_shadow.db")
-    assert out.startswith("sqlite+aiosqlite:")
-
-
-def test_get_shadow_db_url_idempotent_for_postgres():
-    url = "postgresql://u:p@h:5432/quantagent_shadow"
-    assert get_shadow_db_url(url) == url
-
-
-def test_get_shadow_db_url_idempotent_for_sqlite():
-    url = "sqlite:///dev_shadow.db"
-    assert get_shadow_db_url(url) == url
-
-
-def test_get_shadow_db_url_empty_raises():
-    with pytest.raises(ValueError, match="non-empty"):
-        get_shadow_db_url("")
-
-
-def test_get_shadow_db_url_no_db_name_raises():
-    with pytest.raises(ValueError, match="no database name"):
-        get_shadow_db_url("postgresql://user:pass@host:5432/")
-
-
-# ---------------------------------------------------------------------------
-# configure_shadow
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _Cfg:
-    database_url: str = "postgresql://u:p@h:5432/quantagent"
-    shadow_mode: bool = False
-    use_simulated_exchange: bool = False
-    initial_balance: float = 25_000.0
-
-
-def test_configure_shadow_mutates_object_and_env():
-    cfg = _Cfg()
-    snapshot = configure_shadow(cfg)
-
-    # Object mutated in place
-    assert cfg.shadow_mode is True
-    assert cfg.use_simulated_exchange is True
-    assert cfg.database_url == "postgresql://u:p@h:5432/quantagent_shadow"
-    # Original URL preserved on the config for rollback / logging
-    assert getattr(cfg, "original_database_url") == "postgresql://u:p@h:5432/quantagent"
-
-    # Env var side-effects
-    assert is_shadow_mode() is True
-    assert os.environ["DATABASE_URL"] == "postgresql://u:p@h:5432/quantagent_shadow"
-
-    # Snapshot
-    assert isinstance(snapshot, ShadowConfig)
-    assert snapshot.enabled is True
-    assert snapshot.original_database_url == "postgresql://u:p@h:5432/quantagent"
-    assert snapshot.shadow_database_url == "postgresql://u:p@h:5432/quantagent_shadow"
-    assert snapshot.initial_balance == 25_000.0
-
-
-def test_configure_shadow_works_with_dict_config():
-    cfg = {"database_url": "postgresql://u:p@h/quantagent"}
-    snapshot = configure_shadow(cfg)
-    assert cfg["shadow_mode"] is True
-    assert cfg["use_simulated_exchange"] is True
-    assert cfg["database_url"] == "postgresql://u:p@h/quantagent_shadow"
-    assert snapshot.enabled is True
-
-
-def test_configure_shadow_falls_back_to_env_db_url_when_config_has_none():
-    os.environ["DATABASE_URL"] = "postgresql://u:p@h/from_env"
-
-    class _Bare:
-        shadow_mode = False
-        use_simulated_exchange = False
-
-    snapshot = configure_shadow(_Bare)
-    assert snapshot.original_database_url == "postgresql://u:p@h/from_env"
-    assert os.environ["DATABASE_URL"] == "postgresql://u:p@h/from_env_shadow"
-
-
-def test_configure_shadow_handles_unparseable_url_gracefully(caplog):
-    """If the URL can't be transformed, configure_shadow leaves it
-    untouched but still flips the env var. The operator sees a warning."""
-    import logging
-
-    cfg = _Cfg(database_url="postgresql://u:p@h:5432/")
-    with caplog.at_level(logging.WARNING):
-        snapshot = configure_shadow(cfg)
-    assert is_shadow_mode() is True
-    assert cfg.shadow_mode is True
-    assert any("Cannot derive shadow DB URL" in r.message for r in caplog.records)
-    assert snapshot.enabled is True
-
-
-# ---------------------------------------------------------------------------
 # ExchangeFactory shadow swap
 # ---------------------------------------------------------------------------
 
@@ -289,9 +119,8 @@ def test_configure_shadow_handles_unparseable_url_gracefully(caplog):
 def test_factory_returns_simulated_adapter_in_shadow_mode():
     ExchangeFactory.reset()
     ExchangeFactory.register("hyperliquid", _LiveAdapter)
-    enable_shadow_mode()
 
-    adapter = ExchangeFactory.get_adapter("hyperliquid")
+    adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
     assert isinstance(adapter, SimulatedExchangeAdapter)
     # Name carries the requested exchange so consumers can still tell
     # which venue they were *supposed* to be using
@@ -301,7 +130,6 @@ def test_factory_returns_simulated_adapter_in_shadow_mode():
 def test_factory_returns_real_adapter_when_not_shadow():
     ExchangeFactory.reset()
     ExchangeFactory.register("hyperliquid", _LiveAdapter)
-    disable_shadow_mode()
 
     adapter = ExchangeFactory.get_adapter("hyperliquid")
     assert isinstance(adapter, _LiveAdapter)
@@ -311,10 +139,9 @@ def test_factory_returns_real_adapter_when_not_shadow():
 def test_factory_shadow_singleton_per_exchange_name():
     ExchangeFactory.reset()
     ExchangeFactory.register("hyperliquid", _LiveAdapter)
-    enable_shadow_mode()
 
-    a1 = ExchangeFactory.get_adapter("hyperliquid")
-    a2 = ExchangeFactory.get_adapter("hyperliquid")
+    a1 = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+    a2 = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
     assert a1 is a2  # cached
 
 
@@ -322,10 +149,9 @@ def test_factory_shadow_separate_instance_per_exchange():
     ExchangeFactory.reset()
     ExchangeFactory.register("hyperliquid", _LiveAdapter)
     ExchangeFactory.register("binance", _LiveAdapter)
-    enable_shadow_mode()
 
-    hl = ExchangeFactory.get_adapter("hyperliquid")
-    bn = ExchangeFactory.get_adapter("binance")
+    hl = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+    bn = ExchangeFactory.get_adapter("binance", mode="shadow")
     assert hl is not bn
     assert hl.name() == "shadow-hyperliquid"
     assert bn.name() == "shadow-binance"
@@ -335,9 +161,8 @@ def test_factory_shadow_unknown_exchange_still_works():
     """Shadow mode bypasses the registry — useful for testing
     against exchanges that haven't been added yet."""
     ExchangeFactory.reset()
-    enable_shadow_mode()
 
-    adapter = ExchangeFactory.get_adapter("ibkr")
+    adapter = ExchangeFactory.get_adapter("ibkr", mode="shadow")
     assert isinstance(adapter, SimulatedExchangeAdapter)
     assert adapter.name() == "shadow-ibkr"
     # No registered live adapter → data_adapter is None; the sim raises
@@ -350,9 +175,8 @@ def test_factory_shadow_wires_real_adapter_as_data_delegate():
     so Sentinel + signals see real market data while orders stay virtual."""
     ExchangeFactory.reset()
     ExchangeFactory.register("hyperliquid", _LiveAdapter)
-    enable_shadow_mode()
 
-    adapter = ExchangeFactory.get_adapter("hyperliquid")
+    adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
     assert isinstance(adapter, SimulatedExchangeAdapter)
     assert isinstance(adapter._data_adapter, _LiveAdapter)
 
@@ -366,10 +190,9 @@ def test_factory_shadow_data_delegate_construct_failure_is_nonfatal(caplog):
 
     ExchangeFactory.reset()
     ExchangeFactory.register("hyperliquid", _BoomAdapter)
-    enable_shadow_mode()
 
     with caplog.at_level("ERROR"):
-        adapter = ExchangeFactory.get_adapter("hyperliquid")
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
     assert isinstance(adapter, SimulatedExchangeAdapter)
     assert adapter._data_adapter is None
     assert any("data delegate" in r.message for r in caplog.records)
@@ -377,10 +200,9 @@ def test_factory_shadow_data_delegate_construct_failure_is_nonfatal(caplog):
 
 def test_factory_shadow_balance_from_env():
     ExchangeFactory.reset()
-    enable_shadow_mode()
     os.environ["QUANTAGENT_SHADOW_BALANCE"] = "50000"
 
-    adapter = ExchangeFactory.get_adapter("hyperliquid")
+    adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
     assert adapter.balance == 50_000.0
 
 
@@ -389,13 +211,11 @@ def test_factory_reset_shadow_cache_only():
     ExchangeFactory.register("hyperliquid", _LiveAdapter)
 
     # Live cache populated
-    disable_shadow_mode()
     live = ExchangeFactory.get_adapter("hyperliquid")
     assert isinstance(live, _LiveAdapter)
 
     # Shadow cache populated
-    enable_shadow_mode()
-    shadow = ExchangeFactory.get_adapter("hyperliquid")
+    shadow = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
     assert isinstance(shadow, SimulatedExchangeAdapter)
 
     # Reset only the shadow cache; live registry/instances survive
@@ -406,19 +226,198 @@ def test_factory_reset_shadow_cache_only():
 
 
 # ---------------------------------------------------------------------------
-# Integration: configure_shadow → factory swap
+# Task 3 — explicit mode parameter + signing-key scrubbing
 # ---------------------------------------------------------------------------
 
 
-def test_end_to_end_configure_then_factory_returns_sim():
-    """The full happy path: a fresh config gets configured for shadow,
-    then any code that asks the factory for an adapter gets a sim."""
-    ExchangeFactory.reset()
-    ExchangeFactory.register("hyperliquid", _LiveAdapter)
-    disable_shadow_mode()
+class _CredentialedAdapter(_LiveAdapter):
+    """A live-adapter stand-in that owns both layers of credentials.
 
-    cfg = _Cfg()
-    configure_shadow(cfg)
+    Mirrors the structure of ``HyperliquidAdapter``: an inner ccxt-like
+    object on ``self._exchange`` carrying ``privateKey`` + ``walletAddress``,
+    plus a wrapper-level ``_private_key`` so the scrubber can be tested
+    against both surfaces.
+    """
 
-    adapter = ExchangeFactory.get_adapter("hyperliquid")
-    assert isinstance(adapter, SimulatedExchangeAdapter)
+    def __init__(
+        self,
+        wallet_address: str = "0xWALLET",
+        private_key: str = "deadbeef" * 8,
+        secret: str = "topsecret",
+    ) -> None:
+        self._private_key = private_key
+
+        class _InnerCcxt:
+            pass
+
+        inner = _InnerCcxt()
+        inner.privateKey = private_key
+        inner.secret = secret
+        inner.walletAddress = wallet_address
+        inner.apiKey = "public-id-not-secret"
+        self._exchange = inner
+
+    async def place_market_order(self, symbol, side, size):
+        """Real implementation would sign with self._exchange.privateKey
+        and POST to the venue. With a scrubbed key it raises so that
+        any code path that bypasses the sim's order layer surfaces a
+        loud failure instead of placing a real trade."""
+        if (
+            getattr(self._exchange, "privateKey", None) is None
+            and getattr(self, "_private_key", None) is None
+        ):
+            raise RuntimeError(
+                "auth: no signing key configured for credentialed adapter"
+            )
+        return OrderResult(
+            success=True, order_id="LIVE-1", fill_price=100.0,
+            fill_size=size, error=None,
+        )
+
+
+class TestShadowModeParameter:
+    """Task 3 acceptance criteria — six explicit cases."""
+
+    def test_1_shadow_mode_returns_simulated_exchange_adapter(self):
+        """get_adapter(name, mode='shadow') returns a SimulatedExchangeAdapter."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _CredentialedAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        assert isinstance(adapter, SimulatedExchangeAdapter)
+        assert adapter.name() == "shadow-hyperliquid"
+
+    def test_2_shadow_data_adapter_has_nulled_private_key(self):
+        """The data delegate's signing key is scrubbed to None.
+
+        Both the inner ccxt object's `privateKey` / `secret` and the
+        adapter wrapper's `_private_key` must be None after the factory
+        wraps it.
+        """
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _CredentialedAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        delegate = adapter._data_adapter
+        assert isinstance(delegate, _CredentialedAdapter)
+
+        # Inner ccxt-style object scrubbed
+        assert delegate._exchange.privateKey is None
+        assert delegate._exchange.secret is None
+
+        # Wrapper-level signing attribute scrubbed
+        assert delegate._private_key is None
+
+    def test_3_shadow_data_adapter_wallet_address_is_preserved(self):
+        """Wallet address must survive scrubbing — it's needed for
+        read-only authenticated metadata calls (`fetch_user_fees`)."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _CredentialedAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        delegate = adapter._data_adapter
+        assert delegate._exchange.walletAddress == "0xWALLET"
+        # apiKey is intentionally NOT scrubbed (read-only identifier on
+        # most venues; signing requires the paired secret which IS gone).
+        assert delegate._exchange.apiKey == "public-id-not-secret"
+
+    def test_4_shadow_fetch_ohlcv_delegates_to_real_adapter(self):
+        """Read-only data calls go to the data_adapter, not the sim's
+        own (offline) data loader. We capture the delegate's call list
+        to prove it was reached."""
+
+        class _SpyAdapter(_CredentialedAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls: list[tuple] = []
+
+            async def fetch_ohlcv(self, symbol, timeframe, limit=100, since=None):
+                self.calls.append(("fetch_ohlcv", symbol, timeframe, limit))
+                return [
+                    [1700000000000, 100.0, 101.0, 99.0, 100.5, 1234.5],
+                ]
+
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _SpyAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        spy = adapter._data_adapter
+
+        import asyncio
+        candles = asyncio.run(adapter.fetch_ohlcv("BTC-USDC", "1h", limit=1))
+        assert spy.calls == [("fetch_ohlcv", "BTC-USDC", "1h", 1)]
+        assert candles == [
+            [1700000000000, 100.0, 101.0, 99.0, 100.5, 1234.5],
+        ]
+
+    def test_5_shadow_place_order_uses_virtual_portfolio_not_data_adapter(self):
+        """ORDER methods stay 100% on the virtual portfolio. Even if
+        the delegate had a working signing key, the sim's order layer
+        must intercept first. We track delegate calls to prove it was
+        never reached on the order path."""
+
+        class _OrderSpyAdapter(_CredentialedAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.order_calls: list[str] = []
+
+            async def place_market_order(self, symbol, side, size):
+                self.order_calls.append("place_market_order")
+                return await super().place_market_order(symbol, side, size)
+
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _OrderSpyAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        spy = adapter._data_adapter
+
+        # Push a current candle so the virtual portfolio can fill the order
+        adapter.set_current_candle(
+            "BTC-USDC",
+            {
+                "timestamp": 1700000000000,
+                "open": 100.0, "high": 101.0,
+                "low": 99.0, "close": 100.5, "volume": 10.0,
+            },
+        )
+
+        import asyncio
+        result = asyncio.run(adapter.place_market_order("BTC-USDC", "buy", 0.1))
+
+        # Sim filled it on the virtual portfolio
+        assert result.success is True
+        # Delegate was never called for the order path
+        assert spy.order_calls == []
+        # And if the delegate WERE called, the scrubbed key would have
+        # caused a RuntimeError instead of a real fill — verify by
+        # calling its order method directly:
+        with pytest.raises(RuntimeError, match="no signing key"):
+            asyncio.run(spy.place_market_order("BTC-USDC", "buy", 0.1))
+
+    def test_6_live_mode_returns_real_adapter_unchanged(self):
+        """Default mode is live — registered adapter returned with
+        credentials INTACT. Live path must be byte-for-byte identical
+        to the pre-Task-3 behaviour."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _CredentialedAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid")
+        assert isinstance(adapter, _CredentialedAdapter)
+        # Credentials NOT scrubbed in live mode
+        assert adapter._exchange.privateKey == "deadbeef" * 8
+        assert adapter._exchange.secret == "topsecret"
+        assert adapter._private_key == "deadbeef" * 8
+        assert adapter._exchange.walletAddress == "0xWALLET"
+
+        # Same call without an explicit mode also returns live
+        a2 = ExchangeFactory.get_adapter("hyperliquid", mode="live")
+        assert a2 is adapter  # cached
+
+    def test_invalid_mode_raises(self):
+        """Belt-and-braces: an unknown mode value should fail loudly,
+        not silently fall through to live."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _CredentialedAdapter)
+
+        with pytest.raises(ValueError, match="Unknown adapter mode"):
+            ExchangeFactory.get_adapter("hyperliquid", mode="paper")

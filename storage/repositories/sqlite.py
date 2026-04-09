@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS trades (
     conviction_score REAL,
     engine_version TEXT,
     status TEXT NOT NULL DEFAULT 'open',
-    forward_max_r REAL
+    forward_max_r REAL,
+    is_shadow INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS cycles (
     signals_json TEXT,
     conviction_json TEXT,
     action TEXT,
-    conviction_score REAL
+    conviction_score REAL,
+    is_shadow INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -84,7 +86,9 @@ CREATE TABLE IF NOT EXISTS bots (
     status TEXT NOT NULL DEFAULT 'active',
     config_json TEXT,
     created_at TEXT NOT NULL,
-    last_health TEXT
+    last_health TEXT,
+    is_shadow INTEGER NOT NULL DEFAULT 0,
+    mode TEXT NOT NULL DEFAULT 'live'
 );
 """
 
@@ -131,8 +135,8 @@ class SQLiteTradeRepository(TradeRepository):
                    (id, user_id, bot_id, symbol, timeframe, direction,
                     entry_price, exit_price, size, pnl, r_multiple,
                     entry_time, exit_time, exit_reason, conviction_score,
-                    engine_version, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    engine_version, status, is_shadow)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     trade_id,
                     trade["user_id"],
@@ -151,6 +155,7 @@ class SQLiteTradeRepository(TradeRepository):
                     trade.get("conviction_score"),
                     trade.get("engine_version"),
                     trade.get("status", "open"),
+                    1 if trade.get("is_shadow") else 0,
                 ),
             )
             await db.commit()
@@ -165,20 +170,28 @@ class SQLiteTradeRepository(TradeRepository):
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
-    async def get_open_positions(self, user_id: str, bot_id: str) -> list[dict]:
+    async def get_open_positions(
+        self, user_id: str, bot_id: str, *, include_shadow: bool = False
+    ) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = 0"
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM trades WHERE user_id = ? AND bot_id = ? AND status = 'open'",
+                f"SELECT * FROM trades WHERE user_id = ? AND bot_id = ? "
+                f"AND status = 'open'{shadow_clause}",
                 (user_id, bot_id),
             ) as cursor:
                 return [dict(row) async for row in cursor]
 
-    async def get_trades_by_bot(self, bot_id: str, limit: int = 50) -> list[dict]:
+    async def get_trades_by_bot(
+        self, bot_id: str, limit: int = 50, *, include_shadow: bool = False
+    ) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = 0"
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM trades WHERE bot_id = ? ORDER BY entry_time DESC LIMIT ?",
+                f"SELECT * FROM trades WHERE bot_id = ?{shadow_clause} "
+                f"ORDER BY entry_time DESC LIMIT ?",
                 (bot_id, limit),
             ) as cursor:
                 return [dict(row) async for row in cursor]
@@ -214,8 +227,8 @@ class SQLiteCycleRepository(CycleRepository):
                 """INSERT INTO cycles
                    (id, bot_id, symbol, timeframe, timestamp,
                     indicators_json, signals_json, conviction_json,
-                    action, conviction_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    action, conviction_score, is_shadow)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     cycle_id,
                     cycle["bot_id"],
@@ -227,16 +240,21 @@ class SQLiteCycleRepository(CycleRepository):
                     json.dumps(cycle.get("conviction")) if cycle.get("conviction") else None,
                     cycle.get("action"),
                     cycle.get("conviction_score"),
+                    1 if cycle.get("is_shadow") else 0,
                 ),
             )
             await db.commit()
         return cycle_id
 
-    async def get_recent_cycles(self, bot_id: str, limit: int = 5) -> list[dict]:
+    async def get_recent_cycles(
+        self, bot_id: str, limit: int = 5, *, include_shadow: bool = False
+    ) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = 0"
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM cycles WHERE bot_id = ? ORDER BY timestamp DESC LIMIT ?",
+                f"SELECT * FROM cycles WHERE bot_id = ?{shadow_clause} "
+                f"ORDER BY timestamp DESC LIMIT ?",
                 (bot_id, limit),
             ) as cursor:
                 rows = [dict(row) async for row in cursor]
@@ -328,11 +346,13 @@ class SQLiteBotRepository(BotRepository):
     async def save_bot(self, bot: dict) -> str:
         bot_id = bot.get("id") or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
+            mode = bot.get("mode", "live")
+            is_shadow = 1 if (bot.get("is_shadow") or mode == "shadow") else 0
             await db.execute(
                 """INSERT INTO bots
                    (id, user_id, symbol, timeframe, exchange, status,
-                    config_json, created_at, last_health)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    config_json, created_at, last_health, is_shadow, mode)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     bot_id,
                     bot["user_id"],
@@ -343,6 +363,8 @@ class SQLiteBotRepository(BotRepository):
                     json.dumps(bot.get("config")) if bot.get("config") else None,
                     bot.get("created_at", _now_iso()),
                     None,
+                    is_shadow,
+                    mode,
                 ),
             )
             await db.commit()
@@ -378,11 +400,27 @@ class SQLiteBotRepository(BotRepository):
                 row["last_health"] = json.loads(row["last_health"])
         return rows
 
-    async def get_active_bots(self) -> list[dict]:
+    async def get_active_bots(self, *, include_shadow: bool = False) -> list[dict]:
+        shadow_clause = "" if include_shadow else " AND is_shadow = 0"
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM bots WHERE status = ?", ("active",)
+                f"SELECT * FROM bots WHERE status = ?{shadow_clause}", ("active",)
+            ) as cursor:
+                rows = [dict(row) async for row in cursor]
+        for row in rows:
+            if row.get("config_json"):
+                row["config_json"] = json.loads(row["config_json"])
+            if row.get("last_health"):
+                row["last_health"] = json.loads(row["last_health"])
+        return rows
+
+    async def get_active_bots_by_mode(self, mode: str) -> list[dict]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bots WHERE status = ? AND mode = ?",
+                ("active", mode),
             ) as cursor:
                 rows = [dict(row) async for row in cursor]
         for row in rows:

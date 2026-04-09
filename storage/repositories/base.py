@@ -8,26 +8,58 @@ from abc import ABC, abstractmethod
 
 
 class TradeRepository(ABC):
-    """Repository for trade lifecycle records."""
+    """Repository for trade lifecycle records.
+
+    Shadow-mode contract: every read method that returns a list of
+    trades takes an optional ``include_shadow: bool = False`` keyword.
+    Production callers leave it at the default and never see shadow
+    rows. The shadow analytics paths opt in explicitly. Writes accept
+    an ``is_shadow`` key in the input dict (or via the
+    ``is_shadow`` kwarg on ``save_trade``) and persist it. The flag is
+    NOT inferred from the bot record at the repo layer — the caller is
+    responsible for passing the bot's mode through, because looking it
+    up here would couple TradeRepository to BotRepository and force a
+    second query on every write.
+    """
 
     @abstractmethod
     async def save_trade(self, trade: dict) -> str:
-        """Save a trade record. Returns the trade ID."""
+        """Save a trade record. Returns the trade ID.
+
+        Reads ``trade.get("is_shadow", False)`` and persists it on the
+        new ``is_shadow`` column.
+        """
         ...
 
     @abstractmethod
     async def get_trade(self, trade_id: str) -> dict | None:
-        """Get a trade by ID. Returns None if not found."""
+        """Get a trade by ID. Returns None if not found.
+
+        Single-row lookup by primary key — does NOT filter by shadow
+        flag because the caller already knows the trade's identity.
+        """
         ...
 
     @abstractmethod
-    async def get_open_positions(self, user_id: str, bot_id: str) -> list[dict]:
-        """Get open positions filtered by user_id AND bot_id."""
+    async def get_open_positions(
+        self, user_id: str, bot_id: str, *, include_shadow: bool = False
+    ) -> list[dict]:
+        """Get open positions filtered by user_id AND bot_id.
+
+        Defaults to live-only (``is_shadow = false``) so production
+        position-sync never sees shadow virtual fills. Pass
+        ``include_shadow=True`` from shadow-aware code paths only.
+        """
         ...
 
     @abstractmethod
-    async def get_trades_by_bot(self, bot_id: str, limit: int = 50) -> list[dict]:
-        """Get recent trades for a bot, ordered by entry_time descending."""
+    async def get_trades_by_bot(
+        self, bot_id: str, limit: int = 50, *, include_shadow: bool = False
+    ) -> list[dict]:
+        """Get recent trades for a bot, ordered by entry_time descending.
+
+        Defaults to live-only.
+        """
         ...
 
     @abstractmethod
@@ -37,16 +69,29 @@ class TradeRepository(ABC):
 
 
 class CycleRepository(ABC):
-    """Repository for analysis cycle records."""
+    """Repository for analysis cycle records.
+
+    Shadow-mode contract mirrors :class:`TradeRepository`: read methods
+    take ``include_shadow: bool = False`` and default to live-only;
+    writes accept ``is_shadow`` in the input dict.
+    """
 
     @abstractmethod
     async def save_cycle(self, cycle: dict) -> str:
-        """Save a cycle record. Returns the cycle ID."""
+        """Save a cycle record. Returns the cycle ID.
+
+        Reads ``cycle.get("is_shadow", False)`` and persists it.
+        """
         ...
 
     @abstractmethod
-    async def get_recent_cycles(self, bot_id: str, limit: int = 5) -> list[dict]:
-        """Get recent cycles for a bot, ordered by timestamp descending."""
+    async def get_recent_cycles(
+        self, bot_id: str, limit: int = 5, *, include_shadow: bool = False
+    ) -> list[dict]:
+        """Get recent cycles for a bot, ordered by timestamp descending.
+
+        Defaults to live-only.
+        """
         ...
 
 
@@ -94,11 +139,25 @@ class BotRepository(ABC):
         ...
 
     @abstractmethod
-    async def get_active_bots(self) -> list[dict]:
+    async def get_active_bots(self, *, include_shadow: bool = False) -> list[dict]:
         """Get all bots with status='active' across all users.
 
         Used by BotRunner on startup to restore state without
-        requiring re-registration via API.
+        requiring re-registration via API. Defaults to live-only —
+        shadow bots are excluded unless ``include_shadow=True`` is
+        passed. Production startup leaves the default; shadow-mode
+        startup uses :meth:`get_active_bots_by_mode` instead.
+        """
+        ...
+
+    @abstractmethod
+    async def get_active_bots_by_mode(self, mode: str) -> list[dict]:
+        """Get all active bots whose ``mode`` column equals ``mode``.
+
+        Used by the shadow-mode redesign so a single BotRunner can be
+        booted in either mode (``"live"`` or ``"shadow"``) and load
+        only the bots that belong to its mode without inverse
+        filtering. Returns rows with ``status='active' AND mode=?``.
         """
         ...
 

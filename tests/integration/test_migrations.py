@@ -79,6 +79,27 @@ class TestMigrationStructure:
         assert 'revision: str = "001"' in content
         assert "down_revision" in content
 
+    def test_shadow_mode_migration_exists(self):
+        path = Path("alembic/versions/003_shadow_mode_columns.py")
+        assert path.exists()
+        content = path.read_text()
+        assert 'revision: str = "003"' in content
+        assert 'down_revision: Union[str, None] = "002"' in content
+        # Schema additions (add_column may wrap across lines)
+        assert 'add_column(' in content
+        assert '"bots"' in content
+        assert '"trades"' in content
+        assert '"cycles"' in content
+        assert '"is_shadow"' in content
+        assert '"mode"' in content
+        # Views
+        assert "CREATE OR REPLACE VIEW live_trades" in content
+        assert "CREATE OR REPLACE VIEW live_cycles" in content
+        # Symmetric downgrade
+        assert "def downgrade" in content
+        assert "DROP VIEW IF EXISTS live_trades" in content
+        assert "DROP VIEW IF EXISTS live_cycles" in content
+
 
 # ---------------------------------------------------------------------------
 # SQLite schema parity tests — ensure DDL matches migration
@@ -121,6 +142,7 @@ class TestSQLiteSchemaParity:
         expected = {
             "id", "user_id", "symbol", "timeframe", "exchange",
             "status", "config_json", "created_at", "last_health",
+            "is_shadow", "mode",
         }
         assert columns == expected
 
@@ -140,7 +162,7 @@ class TestSQLiteSchemaParity:
             "id", "user_id", "bot_id", "symbol", "timeframe", "direction",
             "entry_price", "exit_price", "size", "pnl", "r_multiple",
             "entry_time", "exit_time", "exit_reason", "conviction_score",
-            "engine_version", "status", "forward_max_r",
+            "engine_version", "status", "forward_max_r", "is_shadow",
         }
         assert columns == expected
 
@@ -159,7 +181,7 @@ class TestSQLiteSchemaParity:
         expected = {
             "id", "bot_id", "symbol", "timeframe", "timestamp",
             "indicators_json", "signals_json", "conviction_json",
-            "action", "conviction_score",
+            "action", "conviction_score", "is_shadow",
         }
         assert columns == expected
 
@@ -177,6 +199,69 @@ class TestSQLiteSchemaParity:
 
         expected = {"id", "symbol", "timeframe", "rule_text", "score", "active", "created_at"}
         assert columns == expected
+
+    @pytest.mark.asyncio
+    async def test_shadow_columns_persist_on_fresh_db(self, tmp_path):
+        """Fresh DB → save bot+trade+cycle with shadow flags → flags survive."""
+        from storage.repositories.sqlite import SQLiteRepositories
+
+        db_path = str(tmp_path / "shadow.db")
+        repos = SQLiteRepositories(db_path=db_path)
+        await repos.init_db()
+
+        await repos.bots.save_bot({
+            "id": "shadow-bot-1",
+            "user_id": "u1",
+            "symbol": "BTC-USDC",
+            "timeframe": "1h",
+            "exchange": "hyperliquid",
+            "mode": "shadow",
+        })
+        await repos.bots.save_bot({
+            "id": "live-bot-1",
+            "user_id": "u1",
+            "symbol": "ETH-USDC",
+            "timeframe": "4h",
+            "exchange": "hyperliquid",
+        })
+
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, mode, is_shadow FROM bots ORDER BY id"
+            ) as cursor:
+                rows = [dict(r) async for r in cursor]
+
+        by_id = {r["id"]: r for r in rows}
+        assert by_id["shadow-bot-1"]["mode"] == "shadow"
+        assert by_id["shadow-bot-1"]["is_shadow"] == 1
+        assert by_id["live-bot-1"]["mode"] == "live"
+        assert by_id["live-bot-1"]["is_shadow"] == 0
+
+        await repos.trades.save_trade({
+            "id": "t-shadow",
+            "user_id": "u1",
+            "bot_id": "shadow-bot-1",
+            "symbol": "BTC-USDC",
+            "timeframe": "1h",
+            "direction": "long",
+            "is_shadow": True,
+        })
+        await repos.cycles.save_cycle({
+            "id": "c-shadow",
+            "bot_id": "shadow-bot-1",
+            "symbol": "BTC-USDC",
+            "timeframe": "1h",
+            "is_shadow": True,
+        })
+
+        async with aiosqlite.connect(db_path) as db:
+            async with db.execute("SELECT is_shadow FROM trades WHERE id = 't-shadow'") as c:
+                trade_row = await c.fetchone()
+            async with db.execute("SELECT is_shadow FROM cycles WHERE id = 'c-shadow'") as c:
+                cycle_row = await c.fetchone()
+        assert trade_row[0] == 1
+        assert cycle_row[0] == 1
 
     @pytest.mark.asyncio
     async def test_cross_bot_signals_table_columns(self, tmp_path):

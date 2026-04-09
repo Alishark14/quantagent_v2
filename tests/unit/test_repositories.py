@@ -452,6 +452,184 @@ class TestCrossBotRepository:
 
 
 # ---------------------------------------------------------------------------
+# Shadow-mode filtering — Task 2 of the Shadow Redesign sprint
+# ---------------------------------------------------------------------------
+
+class TestShadowFiltering:
+    """Repo-layer shadow/live data isolation.
+
+    These tests verify the per-row shadow flag added by Alembic 003 is
+    honoured by every list-returning read method on TradeRepository,
+    CycleRepository, and BotRepository, and that writes from a shadow
+    bot persist `is_shadow=True` so the filtering has something to bite
+    on. Live-only must be the default for every read so that production
+    queries cannot accidentally surface shadow data.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_active_bots_excludes_shadow_by_default(self, repos):
+        """get_active_bots() with no kwarg returns only live bots."""
+        await repos.bots.save_bot({
+            "id": "live-1",
+            "user_id": "u1", "symbol": "BTC-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid",
+        })
+        await repos.bots.save_bot({
+            "id": "shadow-1",
+            "user_id": "u1", "symbol": "ETH-USDC", "timeframe": "4h",
+            "exchange": "hyperliquid", "mode": "shadow",
+        })
+
+        active = await repos.bots.get_active_bots()
+        ids = {b["id"] for b in active}
+        assert ids == {"live-1"}
+
+    @pytest.mark.asyncio
+    async def test_get_active_bots_includes_shadow_when_asked(self, repos):
+        """get_active_bots(include_shadow=True) returns the union."""
+        await repos.bots.save_bot({
+            "id": "live-1",
+            "user_id": "u1", "symbol": "BTC-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid",
+        })
+        await repos.bots.save_bot({
+            "id": "shadow-1",
+            "user_id": "u1", "symbol": "ETH-USDC", "timeframe": "4h",
+            "exchange": "hyperliquid", "mode": "shadow",
+        })
+
+        active = await repos.bots.get_active_bots(include_shadow=True)
+        ids = {b["id"] for b in active}
+        assert ids == {"live-1", "shadow-1"}
+
+    @pytest.mark.asyncio
+    async def test_get_active_bots_by_mode_returns_only_matching_mode(self, repos):
+        """get_active_bots_by_mode('shadow') returns shadow bots only.
+
+        Cross-checks with mode='live' to make sure the filter is exact
+        (not a substring or prefix match).
+        """
+        await repos.bots.save_bot({
+            "id": "live-1",
+            "user_id": "u1", "symbol": "BTC-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid",
+        })
+        await repos.bots.save_bot({
+            "id": "live-2",
+            "user_id": "u1", "symbol": "SOL-USDC", "timeframe": "15m",
+            "exchange": "hyperliquid",
+        })
+        await repos.bots.save_bot({
+            "id": "shadow-1",
+            "user_id": "u1", "symbol": "ETH-USDC", "timeframe": "4h",
+            "exchange": "hyperliquid", "mode": "shadow",
+        })
+        await repos.bots.save_bot({
+            "id": "shadow-2",
+            "user_id": "u1", "symbol": "AVAX-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid", "mode": "shadow",
+        })
+
+        shadow_bots = await repos.bots.get_active_bots_by_mode("shadow")
+        assert {b["id"] for b in shadow_bots} == {"shadow-1", "shadow-2"}
+
+        live_bots = await repos.bots.get_active_bots_by_mode("live")
+        assert {b["id"] for b in live_bots} == {"live-1", "live-2"}
+
+    @pytest.mark.asyncio
+    async def test_save_trade_persists_is_shadow_flag(self, repos):
+        """A trade dict with is_shadow=True writes 1 in the column."""
+        live_id = await repos.trades.save_trade({
+            "user_id": "u1", "bot_id": "live-bot", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+        })
+        shadow_id = await repos.trades.save_trade({
+            "user_id": "u1", "bot_id": "shadow-bot", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+            "is_shadow": True,
+        })
+
+        live_trade = await repos.trades.get_trade(live_id)
+        shadow_trade = await repos.trades.get_trade(shadow_id)
+        assert live_trade["is_shadow"] == 0
+        assert shadow_trade["is_shadow"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_trades_by_bot_excludes_shadow_by_default(self, repos):
+        """get_trades_by_bot() returns 0 rows when the bot has only shadow trades.
+
+        And get_open_positions has the same default. This is the strongest
+        guarantee: even reading by an explicit bot_id, you cannot leak
+        shadow trades into production code paths without opting in.
+        """
+        await repos.trades.save_trade({
+            "id": "t-shadow", "user_id": "u1", "bot_id": "shadow-bot",
+            "symbol": "BTC-USDC", "timeframe": "1h", "direction": "LONG",
+            "status": "open", "is_shadow": True,
+            "entry_time": "2026-04-09T00:00:00Z",
+        })
+
+        # default → shadow filtered out
+        trades = await repos.trades.get_trades_by_bot("shadow-bot")
+        assert trades == []
+
+        positions = await repos.trades.get_open_positions("u1", "shadow-bot")
+        assert positions == []
+
+    @pytest.mark.asyncio
+    async def test_get_trades_by_bot_includes_shadow_when_asked(self, repos):
+        """include_shadow=True surfaces shadow trades alongside live."""
+        await repos.trades.save_trade({
+            "id": "t-live", "user_id": "u1", "bot_id": "bot-x",
+            "symbol": "BTC-USDC", "timeframe": "1h", "direction": "LONG",
+            "status": "open",
+            "entry_time": "2026-04-09T00:00:00Z",
+        })
+        await repos.trades.save_trade({
+            "id": "t-shadow", "user_id": "u1", "bot_id": "bot-x",
+            "symbol": "BTC-USDC", "timeframe": "1h", "direction": "SHORT",
+            "status": "open", "is_shadow": True,
+            "entry_time": "2026-04-09T01:00:00Z",
+        })
+
+        # default → only live
+        live_only = await repos.trades.get_trades_by_bot("bot-x")
+        assert {t["id"] for t in live_only} == {"t-live"}
+
+        # opt-in → both
+        both = await repos.trades.get_trades_by_bot("bot-x", include_shadow=True)
+        assert {t["id"] for t in both} == {"t-live", "t-shadow"}
+
+        # get_open_positions has the same shape
+        live_pos = await repos.trades.get_open_positions("u1", "bot-x")
+        assert {t["id"] for t in live_pos} == {"t-live"}
+        all_pos = await repos.trades.get_open_positions(
+            "u1", "bot-x", include_shadow=True
+        )
+        assert {t["id"] for t in all_pos} == {"t-live", "t-shadow"}
+
+    @pytest.mark.asyncio
+    async def test_get_recent_cycles_excludes_shadow_by_default(self, repos):
+        """CycleRepository follows the same shadow-filtering contract."""
+        await repos.cycles.save_cycle({
+            "id": "c-live", "bot_id": "bot-x", "symbol": "BTC-USDC",
+            "timeframe": "1h", "timestamp": "2026-04-09T00:00:00Z",
+            "action": "LONG",
+        })
+        await repos.cycles.save_cycle({
+            "id": "c-shadow", "bot_id": "bot-x", "symbol": "BTC-USDC",
+            "timeframe": "1h", "timestamp": "2026-04-09T01:00:00Z",
+            "action": "SHORT", "is_shadow": True,
+        })
+
+        live = await repos.cycles.get_recent_cycles("bot-x")
+        assert {c["id"] for c in live} == {"c-live"}
+
+        both = await repos.cycles.get_recent_cycles("bot-x", include_shadow=True)
+        assert {c["id"] for c in both} == {"c-live", "c-shadow"}
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
