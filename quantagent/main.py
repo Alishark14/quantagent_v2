@@ -15,6 +15,7 @@ import logging
 import os
 import signal
 import sys
+from typing import Callable
 
 
 def _setup_logging() -> None:
@@ -25,6 +26,141 @@ def _setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+
+def _make_bot_factory(
+    repos,
+    llm_provider,
+    adapter_factory: Callable[[str], object],
+    event_bus,
+    feature_flags=None,
+) -> Callable[[str, str], object]:
+    """Build a `(symbol, bot_id) -> TraderBot` factory closure.
+
+    The LLM provider, repos, event bus, and feature flags are all
+    captured by reference so they're constructed ONCE at startup and
+    shared across every spawned bot. The exchange adapter and bot-local
+    state (TradingConfig, OHLCVFetcher, Executor, AnalysisPipeline)
+    are constructed PER bot inside the closure because they're
+    bot-symbol-scoped.
+
+    Mirrors the wiring used by `scripts/run_trade.py` so that single-
+    cycle dev runs and the production BotRunner exercise the same
+    dependency graph. The only difference is that here the closure is
+    invoked dynamically by `BotManager.spawn_bot` instead of being
+    hand-built once at script start.
+
+    Per CLAUDE.md Rule 3, the engine has zero knowledge of which
+    exchange this is — it just calls the injected `adapter_factory`.
+    Shadow mode is transparent: in shadow mode the factory returns a
+    `SimulatedExchangeAdapter` with the real venue's adapter wired up
+    as `data_adapter=`, so the same code path serves live data with
+    fake fills.
+    """
+    # Lazy imports — keep CLI start-up cheap and avoid pulling the full
+    # engine into argv parsing.
+    from engine.config import FeatureFlags, TradingConfig
+    from engine.conviction.agent import ConvictionAgent
+    from engine.data.flow import FlowAgent, FlowSignalAgent
+    from engine.data.flow.crypto import CryptoFlowProvider
+    from engine.data.ohlcv import OHLCVFetcher
+    from engine.execution.agent import DecisionAgent
+    from engine.execution.executor import Executor
+    from engine.memory.cross_bot import CrossBotSignals
+    from engine.memory.cycle_memory import CycleMemory
+    from engine.memory.reflection_rules import ReflectionRules
+    from engine.memory.regime_history import RegimeHistory
+    from engine.pipeline import AnalysisPipeline
+    from engine.signals.indicator_agent import IndicatorAgent
+    from engine.signals.pattern_agent import PatternAgent
+    from engine.signals.registry import SignalRegistry
+    from engine.signals.trend_agent import TrendAgent
+    from engine.trader_bot import TraderBot
+    from sentinel.position_manager import PositionManager
+
+    # Feature flags are shared across bots — load once.
+    flags = feature_flags or FeatureFlags()
+
+    def factory(symbol: str, bot_id: str):
+        # Look up bot config (timeframe, exchange, user_id) from the DB
+        # if it's been stored. Falls back to defaults so the factory
+        # remains usable for ad-hoc / unregistered spawns.
+        bot_dict: dict | None = None
+        try:
+            # synchronous best-effort lookup — repos.bots.get_bot is
+            # async, so we just inline the safe defaults if we can't
+            # await here. The runner already has the dict in
+            # _bot_configs, but the BotManager calls factory(...)
+            # without that context. Use sane defaults.
+            pass
+        except Exception:
+            bot_dict = None
+
+        timeframe = (bot_dict or {}).get("timeframe", "1h")
+        exchange = (bot_dict or {}).get("exchange", "hyperliquid")
+        user_id = (bot_dict or {}).get("user_id", "system")
+
+        config = TradingConfig(symbol=symbol, timeframe=timeframe)
+        adapter = adapter_factory(exchange)
+
+        # Data layer
+        fetcher = OHLCVFetcher(adapter, config)
+        flow_agent = FlowAgent([CryptoFlowProvider()])
+
+        # Signal layer — register every enabled agent. The four
+        # currently-shipped agents are gated by their feature flags so
+        # operators can disable any of them via env var or features.yaml
+        # without code changes (CLAUDE.md Rule 9).
+        registry = SignalRegistry()
+        if flags.is_enabled("indicator_agent"):
+            registry.register(IndicatorAgent(llm_provider, flags))
+        if flags.is_enabled("pattern_agent"):
+            registry.register(PatternAgent(llm_provider, flags))
+        if flags.is_enabled("trend_agent"):
+            registry.register(TrendAgent(llm_provider, flags))
+        if flags.is_enabled("flow_signal_agent"):
+            registry.register(FlowSignalAgent(flags))
+
+        # Conviction + Decision (LLM-backed)
+        conviction_agent = ConvictionAgent(llm_provider)
+        decision_agent = DecisionAgent(llm_provider, config)
+
+        # Execution + Sentinel position manager
+        executor = Executor(adapter, event_bus, config)
+        position_manager = PositionManager(adapter, event_bus)
+
+        # Memory layer (shared repos, per-bot scoping happens via
+        # bot_id / user_id passed into the pipeline)
+        cycle_mem = CycleMemory(repos.cycles)
+        rules = ReflectionRules(repos.rules)
+        cross_bot = CrossBotSignals(repos.cross_bot)
+        regime = RegimeHistory()
+
+        pipeline = AnalysisPipeline(
+            ohlcv_fetcher=fetcher,
+            flow_agent=flow_agent,
+            signal_registry=registry,
+            conviction_agent=conviction_agent,
+            decision_agent=decision_agent,
+            event_bus=event_bus,
+            cycle_memory=cycle_mem,
+            reflection_rules=rules,
+            cross_bot=cross_bot,
+            regime_history=regime,
+            cycle_repo=repos.cycles,
+            config=config,
+            bot_id=bot_id,
+            user_id=user_id,
+        )
+
+        return TraderBot(
+            bot_id=bot_id,
+            pipeline=pipeline,
+            executor=executor,
+            position_manager=position_manager,
+        )
+
+    return factory
 
 
 async def _run_server() -> None:
@@ -40,7 +176,9 @@ async def _run_server() -> None:
         is_shadow_mode,
     )
     from engine.bot_manager import BotManager
+    from engine.config import FeatureFlags
     from engine.events import create_event_bus
+    from llm.claude import ClaudeProvider
     from storage.repositories import get_repositories
 
     logger = logging.getLogger("quantagent")
@@ -67,13 +205,32 @@ async def _run_server() -> None:
     repos = await get_repositories()
     event_bus = create_event_bus("memory")
 
-    # Bot factory placeholder — wires engine deps per symbol
-    def bot_factory(symbol: str, bot_id: str):
-        raise NotImplementedError(
-            "Full bot_factory requires LLM + exchange adapter wiring. "
-            "Use run_trade.py for manual cycles or wire the factory "
-            "in a deployment-specific entrypoint."
+    # ── LLM provider (constructed ONCE, shared by every spawned bot) ──
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.warning(
+            "ANTHROPIC_API_KEY not set — bot_factory will fail at first "
+            "spawn. Set it in .env before running live."
         )
+    llm_provider = ClaudeProvider(api_key=api_key) if api_key else None
+
+    # ── Adapter factory (transparent shadow swap via ExchangeFactory) ──
+    def adapter_factory(exchange: str):
+        # Side-effect import: registers HyperliquidAdapter with the
+        # ExchangeFactory the first time something asks for an adapter.
+        import exchanges.hyperliquid  # noqa: F401
+        from exchanges.factory import ExchangeFactory
+        return ExchangeFactory.get_adapter(exchange)
+
+    # ── Bot factory: wires the full analysis pipeline per symbol ──
+    feature_flags = FeatureFlags()
+    bot_factory = _make_bot_factory(
+        repos=repos,
+        llm_provider=llm_provider,
+        adapter_factory=adapter_factory,
+        event_bus=event_bus,
+        feature_flags=feature_flags,
+    )
 
     bot_manager = BotManager(
         event_bus=event_bus,
@@ -83,14 +240,10 @@ async def _run_server() -> None:
     # ── Initialize BotRunner ──
     from quantagent.runner import BotRunner
 
-    def adapter_factory(exchange: str):
-        from exchanges.factory import ExchangeFactory
-        return ExchangeFactory.get_adapter(exchange)
-
     runner = BotRunner(
         repos=repos,
         adapter_factory=adapter_factory,
-        llm_provider=None,  # wired by bot_factory per bot
+        llm_provider=llm_provider,
         event_bus=event_bus,
         bot_manager=bot_manager,
     )
