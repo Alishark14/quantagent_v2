@@ -15,7 +15,16 @@ from dataclasses import asdict, dataclass
 
 @dataclass
 class EvalOutput:
-    """One model decision on one scenario."""
+    """One model decision on one scenario.
+
+    ``position_size_pct`` is retained as an optional field for back-compat
+    with historical eval recordings, but live runs now leave it ``None``:
+    Sprint Portfolio-Risk-Manager Task 1 stripped DecisionAgent of dollar
+    sizing — sizing is owned by ``PortfolioRiskManager`` downstream and
+    isn't part of what the eval framework grades. ``risk_weight`` carries
+    DecisionAgent's deterministic conviction-band weight (0.75 / 1.0 / 1.15
+    / 1.3) so eval reports can still see the sizing INTENT without dollars.
+    """
 
     direction: str  # "LONG" | "SHORT" | "SKIP"
     conviction: float  # 0.0 to 1.0
@@ -30,6 +39,11 @@ class EvalOutput:
     # Populated by the eval framework after the run completes
     teacher_agreement: float | None = None
     conviction_calibration: float | None = None
+
+    # DecisionAgent's conviction-band weight (0.75 / 1.0 / 1.15 / 1.3),
+    # None for SKIP / HOLD / CLOSE_ALL, and None on mock-mode runs that
+    # don't go through the real DecisionAgent.
+    risk_weight: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

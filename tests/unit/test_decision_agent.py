@@ -190,7 +190,7 @@ class TestDecisionAgentLowConviction:
         agent = DecisionAgent(llm, _make_config(conviction_threshold=0.5))
 
         conviction = _make_conviction(score=0.35)
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "SKIP"
         assert "below threshold" in result.reasoning
@@ -202,21 +202,22 @@ class TestDecisionAgentLowConviction:
         agent = DecisionAgent(llm, _make_config(conviction_threshold=0.5))
 
         conviction = _make_conviction(score=0.50)
-        await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        await agent.decide(conviction, _make_market_data(), None)
 
         assert llm.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_below_threshold_no_position_size(self) -> None:
+    async def test_below_threshold_no_sl_or_risk_weight(self) -> None:
         llm = MockLLMProvider(_long_response())
         agent = DecisionAgent(llm, _make_config(conviction_threshold=0.5))
 
         conviction = _make_conviction(score=0.3)
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.position_size is None
         assert result.sl_price is None
         assert result.tp1_price is None
+        assert result.risk_weight is None
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +232,12 @@ class TestDecisionAgentLLMDecision:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72, direction="LONG")
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "LONG"
         assert result.conviction_score == 0.72
-        assert result.position_size is not None
-        assert result.position_size > 0
+        # DecisionAgent never sets position_size — PRM owns sizing.
+        assert result.position_size is None
         assert result.sl_price is not None
         assert result.sl_price < 66490.0  # SL should be below entry
         assert result.tp1_price is not None
@@ -245,6 +246,8 @@ class TestDecisionAgentLLMDecision:
         assert result.tp2_price > result.tp1_price  # TP2 > TP1
         assert result.rr_ratio is not None
         assert result.rr_ratio > 0
+        # Conviction 0.72 → "high" tier → risk_weight 1.15
+        assert result.risk_weight == pytest.approx(1.15)
 
     @pytest.mark.asyncio
     async def test_skip_no_position(self) -> None:
@@ -252,10 +255,12 @@ class TestDecisionAgentLLMDecision:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.55, direction="SKIP")
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "SKIP"
         assert result.position_size is None
+        # SKIP is not an entry — risk_weight stays None (PRM never runs).
+        assert result.risk_weight is None
 
     @pytest.mark.asyncio
     async def test_hold_with_position(self) -> None:
@@ -264,7 +269,7 @@ class TestDecisionAgentLLMDecision:
 
         conviction = _make_conviction(score=0.55, direction="LONG")
         position = _make_position("long")
-        result = await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), position)
 
         assert result.action == "HOLD"
 
@@ -275,7 +280,7 @@ class TestDecisionAgentLLMDecision:
 
         conviction = _make_conviction(score=0.65, direction="SHORT")
         position = _make_position("long")
-        result = await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), position)
 
         assert result.action == "CLOSE_ALL"
 
@@ -286,7 +291,7 @@ class TestDecisionAgentLLMDecision:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72, direction="LONG")
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.raw_output == raw
 
@@ -304,7 +309,7 @@ class TestDecisionAgentSLTP:
 
         conviction = _make_conviction(score=0.72, direction="LONG")
         data = _make_market_data()
-        result = await agent.decide(conviction, data, None, 10000.0)
+        result = await agent.decide(conviction, data, None)
 
         entry = data.candles[-1]["close"]
         assert result.sl_price is not None
@@ -317,7 +322,7 @@ class TestDecisionAgentSLTP:
 
         conviction = _make_conviction(score=0.72, direction="LONG")
         data = _make_market_data()
-        result = await agent.decide(conviction, data, None, 10000.0)
+        result = await agent.decide(conviction, data, None)
 
         entry = data.candles[-1]["close"]
         assert result.tp1_price is not None
@@ -337,7 +342,7 @@ class TestDecisionAgentSLTP:
 
         conviction = _make_conviction(score=0.72, direction="SHORT")
         data = _make_market_data()
-        result = await agent.decide(conviction, data, None, 10000.0)
+        result = await agent.decide(conviction, data, None)
 
         entry = data.candles[-1]["close"]
         assert result.sl_price is not None
@@ -356,51 +361,95 @@ class TestDecisionAgentSLTP:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72, direction="LONG")
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.rr_ratio == 3.0
 
 
 # ---------------------------------------------------------------------------
-# Tests: Position sizing
+# Tests: risk_weight derived from conviction (Sprint Portfolio-Risk-Manager Task 1)
+#
+# DecisionAgent no longer outputs dollar sizes — it attaches a deterministic
+# risk_weight (0.75 / 1.0 / 1.15 / 1.3) computed from the conviction score in
+# plain Python. PortfolioRiskManager consumes this weight downstream when it
+# computes the actual position size in USD.
 # ---------------------------------------------------------------------------
 
-class TestDecisionAgentSizing:
+class TestDecisionAgentRiskWeight:
 
     @pytest.mark.asyncio
-    async def test_conviction_size_multiplier_high(self) -> None:
+    async def test_risk_weight_low_band(self) -> None:
+        """conviction 0.50 - 0.60 → risk_weight 0.75."""
         llm = MockLLMProvider(_long_response())
         agent = DecisionAgent(llm, _make_config())
-
-        conv_moderate = _make_conviction(score=0.55)
-        conv_high = _make_conviction(score=0.75)
-
-        result_mod = await agent.decide(conv_moderate, _make_market_data(), None, 10000.0)
-        result_high = await agent.decide(conv_high, _make_market_data(), None, 10000.0)
-
-        # Higher conviction should produce larger position
-        assert result_high.position_size > result_mod.position_size
+        result = await agent.decide(_make_conviction(score=0.55), _make_market_data(), None)
+        assert result.risk_weight == pytest.approx(0.75)
 
     @pytest.mark.asyncio
-    async def test_pyramid_size_is_half(self) -> None:
-        llm = MockLLMProvider(_add_long_response())
+    async def test_risk_weight_moderate_band(self) -> None:
+        """conviction 0.60 - 0.70 → risk_weight 1.0."""
+        llm = MockLLMProvider(_long_response())
         agent = DecisionAgent(llm, _make_config())
+        result = await agent.decide(_make_conviction(score=0.65), _make_market_data(), None)
+        assert result.risk_weight == pytest.approx(1.0)
 
-        # Get base size first
-        llm2 = MockLLMProvider(_long_response())
-        agent2 = DecisionAgent(llm2, _make_config())
-        conv = _make_conviction(score=0.75)
-        base_result = await agent2.decide(conv, _make_market_data(), None, 10000.0)
+    @pytest.mark.asyncio
+    async def test_risk_weight_high_band(self) -> None:
+        """conviction 0.70 - 0.85 → risk_weight 1.15."""
+        llm = MockLLMProvider(_long_response())
+        agent = DecisionAgent(llm, _make_config())
+        result = await agent.decide(_make_conviction(score=0.78), _make_market_data(), None)
+        assert result.risk_weight == pytest.approx(1.15)
 
-        # Now get pyramid size
-        position = _make_position("long", entry_price=64000.0)
-        pyramid_result = await agent.decide(conv, _make_market_data(), position, 10000.0)
+    @pytest.mark.asyncio
+    async def test_risk_weight_very_high_band(self) -> None:
+        """conviction 0.85+ → risk_weight 1.3."""
+        llm = MockLLMProvider(_long_response())
+        agent = DecisionAgent(llm, _make_config())
+        result = await agent.decide(_make_conviction(score=0.90), _make_market_data(), None)
+        assert result.risk_weight == pytest.approx(1.30)
 
-        # Pyramid can get safety-checked to HOLD, but if it got through as ADD_LONG
-        # the size would be ~50% of base. If safety converts to HOLD, size is None.
-        if pyramid_result.action == "ADD_LONG":
-            assert pyramid_result.position_size is not None
-            assert pyramid_result.position_size < base_result.position_size
+    @pytest.mark.asyncio
+    async def test_risk_weight_only_set_for_entry_actions(self) -> None:
+        """SKIP / HOLD / CLOSE_ALL must NOT carry a risk_weight — there
+        is no trade to size."""
+        llm = MockLLMProvider(_skip_response())
+        agent = DecisionAgent(llm, _make_config())
+        result = await agent.decide(_make_conviction(score=0.72), _make_market_data(), None)
+        assert result.action == "SKIP"
+        assert result.risk_weight is None
+
+    @pytest.mark.asyncio
+    async def test_position_size_always_none_from_decision_agent(self) -> None:
+        """DecisionAgent must NEVER output a dollar position size — that's
+        PortfolioRiskManager's job. Pins the contract that the field comes
+        out as None for every action including LONG/SHORT/ADD_LONG."""
+        llm = MockLLMProvider(_long_response())
+        agent = DecisionAgent(llm, _make_config())
+        result = await agent.decide(
+            _make_conviction(score=0.75), _make_market_data(), None
+        )
+        assert result.action == "LONG"
+        assert result.position_size is None
+
+    def test_risk_weight_function_directly(self) -> None:
+        """The pure-Python helper itself — no LLM, no async, no agent.
+        Locks the boundary cases that the band tests above can't hit
+        without contriving a conviction at the exact boundary."""
+        from engine.execution.agent import risk_weight_from_conviction
+
+        # Below 0.60 → 0.75 (lowest valid band; below 0.50 the engine SKIPs first)
+        assert risk_weight_from_conviction(0.50) == pytest.approx(0.75)
+        assert risk_weight_from_conviction(0.59) == pytest.approx(0.75)
+        # 0.60 - 0.70 → 1.0
+        assert risk_weight_from_conviction(0.60) == pytest.approx(1.0)
+        assert risk_weight_from_conviction(0.69) == pytest.approx(1.0)
+        # 0.70 - 0.85 → 1.15
+        assert risk_weight_from_conviction(0.70) == pytest.approx(1.15)
+        assert risk_weight_from_conviction(0.84) == pytest.approx(1.15)
+        # 0.85+ → 1.3
+        assert risk_weight_from_conviction(0.85) == pytest.approx(1.30)
+        assert risk_weight_from_conviction(1.00) == pytest.approx(1.30)
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +467,7 @@ class TestDecisionAgentSafetyOverrides:
         conviction = _make_conviction(score=0.72, direction="LONG")
         position = _make_position("long")  # already have a LONG
 
-        result = await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), position)
 
         # Safety should convert LONG → HOLD (already have position)
         assert result.action == "HOLD"
@@ -433,26 +482,29 @@ class TestDecisionAgentSafetyOverrides:
         # Threshold is 0.2 (so LLM gets called), but conviction is 0.25
         # Safety check enforces conviction floor at 0.3
         conviction = _make_conviction(score=0.25, direction="LONG")
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "SKIP"
         assert "conviction_floor" in result.reasoning
 
     @pytest.mark.asyncio
-    async def test_safety_override_clears_sizing(self) -> None:
-        """When safety converts action to HOLD/SKIP, sizing fields are cleared."""
+    async def test_safety_override_clears_sl_tp_and_risk_weight(self) -> None:
+        """When safety converts an entry action to HOLD/SKIP, the SL/TP
+        levels and risk_weight must be cleared so PRM can't size a trade
+        the safety check just blocked."""
         llm = MockLLMProvider(_long_response())
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72, direction="LONG")
         position = _make_position("long")  # triggers position_limit → HOLD
 
-        result = await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), position)
 
         assert result.action == "HOLD"
         assert result.position_size is None
         assert result.sl_price is None
         assert result.tp1_price is None
+        assert result.risk_weight is None
 
     @pytest.mark.asyncio
     async def test_safety_sl_validation_blocks_zero_atr(self) -> None:
@@ -464,7 +516,7 @@ class TestDecisionAgentSafetyOverrides:
         data = _make_market_data()
         data.indicators["atr"] = 0.0  # invalid ATR
 
-        result = await agent.decide(conviction, data, None, 10000.0)
+        result = await agent.decide(conviction, data, None)
 
         # With ATR=0, SL/TP can't be computed, and safety check blocks entry
         assert result.action == "SKIP"
@@ -482,7 +534,7 @@ class TestDecisionAgentParseSafety:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72)
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "SKIP"
 
@@ -493,7 +545,7 @@ class TestDecisionAgentParseSafety:
 
         conviction = _make_conviction(score=0.72)
         position = _make_position("long")
-        result = await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), position)
 
         # Safety check converts to HOLD since we have a position
         assert result.action == "HOLD"
@@ -509,7 +561,7 @@ class TestDecisionAgentParseSafety:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72)
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "SKIP"
 
@@ -519,7 +571,7 @@ class TestDecisionAgentParseSafety:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72)
-        result = await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), None)
 
         assert result.action == "SKIP"
 
@@ -530,7 +582,7 @@ class TestDecisionAgentParseSafety:
 
         conviction = _make_conviction(score=0.72)
         position = _make_position("long")
-        result = await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        result = await agent.decide(conviction, _make_market_data(), position)
 
         assert result.action == "HOLD"
 
@@ -547,7 +599,7 @@ class TestDecisionAgentPromptContent:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72, direction="LONG", regime="TRENDING_UP")
-        await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        await agent.decide(conviction, _make_market_data(), None)
 
         prompt = llm.last_user_prompt
         assert "0.72" in prompt
@@ -560,7 +612,7 @@ class TestDecisionAgentPromptContent:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72)
-        await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        await agent.decide(conviction, _make_market_data(), None)
 
         assert "No open position" in llm.last_user_prompt
 
@@ -571,7 +623,7 @@ class TestDecisionAgentPromptContent:
 
         conviction = _make_conviction(score=0.72)
         position = _make_position("long", entry_price=64000.0)
-        await agent.decide(conviction, _make_market_data(), position, 10000.0)
+        await agent.decide(conviction, _make_market_data(), position)
 
         prompt = llm.last_user_prompt
         assert "LONG" in prompt
@@ -584,7 +636,7 @@ class TestDecisionAgentPromptContent:
 
         conviction = _make_conviction(score=0.72)
         memory = "Last cycle: SKIP at 0.45 conviction. Rule: Avoid LONG when RSI > 75."
-        await agent.decide(conviction, _make_market_data(), None, 10000.0, memory_context=memory)
+        await agent.decide(conviction, _make_market_data(), None, memory_context=memory)
 
         assert "Avoid LONG when RSI > 75" in llm.last_user_prompt
 
@@ -594,7 +646,7 @@ class TestDecisionAgentPromptContent:
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72)
-        await agent.decide(conviction, _make_market_data(), None, 10000.0)
+        await agent.decide(conviction, _make_market_data(), None)
 
         sys = llm.last_system_prompt
         assert "LONG" in sys
@@ -605,11 +657,20 @@ class TestDecisionAgentPromptContent:
         assert "SKIP" in sys
 
     @pytest.mark.asyncio
-    async def test_account_balance_in_prompt(self) -> None:
+    async def test_account_balance_not_in_prompt(self) -> None:
+        """DecisionAgent must NOT see account balance — sizing is the
+        PortfolioRiskManager's job (Sprint Portfolio-Risk-Manager Task 1).
+
+        Pins the contract that the LLM prompt contains no dollar amount,
+        no Balance: line, no equity reference. A future regression that
+        re-adds balance to the prompt would break this assertion."""
         llm = MockLLMProvider(_long_response())
         agent = DecisionAgent(llm, _make_config())
 
         conviction = _make_conviction(score=0.72)
-        await agent.decide(conviction, _make_market_data(), None, 25000.0)
+        await agent.decide(conviction, _make_market_data(), None)
 
-        assert "25000" in llm.last_user_prompt
+        prompt = llm.last_user_prompt or ""
+        assert "Balance" not in prompt
+        assert "$" not in prompt
+        assert "account_balance" not in prompt

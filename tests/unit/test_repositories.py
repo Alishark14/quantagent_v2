@@ -663,6 +663,92 @@ class TestShadowFiltering:
         both = await repos.cycles.get_recent_cycles("bot-x", include_shadow=True)
         assert {c["id"] for c in both} == {"c-live", "c-shadow"}
 
+    @pytest.mark.asyncio
+    async def test_save_bot_paper_mode_auto_derives_is_shadow_true(self, repos):
+        """Paper Trading Task 2 — paper bots are auto-marked is_shadow=True.
+
+        Paper bots trade on testnet (fake money). They must be excluded
+        from the live data moat — the QuantDataScientist mining job
+        reads the live_* views which strip ``is_shadow=true`` rows, so
+        the auto-derive guarantees no testnet fills leak into alpha
+        mining without any caller having to remember to set the flag.
+        """
+        await repos.bots.save_bot({
+            "id": "paper-1",
+            "user_id": "u1", "symbol": "BTC-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid", "mode": "paper",
+        })
+
+        # The repo's get_active_bots(include_shadow=False) — the default
+        # — strips is_shadow=True rows. So the paper bot should be
+        # absent from the live read but present in the include-shadow
+        # opt-in read. This pins the auto-derive end-to-end.
+        live_only = await repos.bots.get_active_bots()
+        assert "paper-1" not in {b["id"] for b in live_only}
+
+        with_shadow = await repos.bots.get_active_bots(include_shadow=True)
+        paper_bot = next(b for b in with_shadow if b["id"] == "paper-1")
+        # SQLite stores BOOLEAN as 0/1; postgres returns Python bools.
+        # Both backends should set the flag to a truthy value.
+        assert bool(paper_bot["is_shadow"]) is True
+        assert paper_bot["mode"] == "paper"
+
+    @pytest.mark.asyncio
+    async def test_save_bot_live_mode_keeps_is_shadow_false(self, repos):
+        """Negative control: live bots are NOT auto-marked is_shadow.
+
+        Pins the inverse of the paper auto-derive so a future regression
+        that broadens the auto-derive (e.g. typo in the mode tuple)
+        gets caught immediately.
+        """
+        await repos.bots.save_bot({
+            "id": "live-only",
+            "user_id": "u1", "symbol": "ETH-USDC", "timeframe": "4h",
+            "exchange": "hyperliquid", "mode": "live",
+        })
+
+        live_only = await repos.bots.get_active_bots()
+        bot = next(b for b in live_only if b["id"] == "live-only")
+        assert bool(bot["is_shadow"]) is False
+        assert bot["mode"] == "live"
+
+    @pytest.mark.asyncio
+    async def test_get_active_bots_by_mode_paper_returns_paper_bots(self, repos):
+        """``get_active_bots_by_mode('paper')`` filters by exact mode
+        match — proves the existing by-mode helper works for the new
+        mode value without any accessor changes."""
+        await repos.bots.save_bot({
+            "id": "live-1",
+            "user_id": "u1", "symbol": "BTC-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid",
+        })
+        await repos.bots.save_bot({
+            "id": "shadow-1",
+            "user_id": "u1", "symbol": "ETH-USDC", "timeframe": "4h",
+            "exchange": "hyperliquid", "mode": "shadow",
+        })
+        await repos.bots.save_bot({
+            "id": "paper-1",
+            "user_id": "u1", "symbol": "SOL-USDC", "timeframe": "30m",
+            "exchange": "hyperliquid", "mode": "paper",
+        })
+        await repos.bots.save_bot({
+            "id": "paper-2",
+            "user_id": "u1", "symbol": "AVAX-USDC", "timeframe": "1h",
+            "exchange": "hyperliquid", "mode": "paper",
+        })
+
+        paper_bots = await repos.bots.get_active_bots_by_mode("paper")
+        assert {b["id"] for b in paper_bots} == {"paper-1", "paper-2"}
+
+        # Cross-check: shadow filter doesn't see paper bots
+        shadow_bots = await repos.bots.get_active_bots_by_mode("shadow")
+        assert {b["id"] for b in shadow_bots} == {"shadow-1"}
+
+        # Live filter still works unchanged
+        live_bots = await repos.bots.get_active_bots_by_mode("live")
+        assert {b["id"] for b in live_bots} == {"live-1"}
+
 
 # ---------------------------------------------------------------------------
 # Factory

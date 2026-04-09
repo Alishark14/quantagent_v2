@@ -1,7 +1,13 @@
 """DecisionAgent: LLM-based action selection from conviction output.
 
 Receives a PRE-FILTERED conviction score — the hard analytical work is done.
-DecisionAgent decides trade mechanics: action, sizing, risk parameters.
+DecisionAgent decides trade INTENT only: action, SL/TP levels, and the
+reasoning. It does NOT compute position size in dollars — that's the
+PortfolioRiskManager's job (Sprint Portfolio-Risk-Manager Task 1). The
+agent attaches a deterministic ``risk_weight`` (0.75 / 1.0 / 1.15 / 1.3)
+derived from conviction in plain Python — the LLM is never asked to do
+sizing math.
+
 On any failure, defaults to HOLD (if position open) or SKIP (if no position).
 """
 
@@ -22,7 +28,7 @@ from engine.execution.prompts.decision_v1 import (
     SYSTEM_PROMPT,
     USER_PROMPT,
 )
-from engine.execution.risk_profiles import compute_position_size, compute_sl_tp
+from engine.execution.risk_profiles import compute_sl_tp
 from engine.execution.safety_checks import SafetyCheckResult, run_safety_checks
 from engine.types import ConvictionOutput, MarketData, Position, TradeAction
 from llm.base import LLMProvider, LLMResponse
@@ -31,13 +37,29 @@ logger = logging.getLogger(__name__)
 
 _VALID_ACTIONS = {"LONG", "SHORT", "ADD_LONG", "ADD_SHORT", "CLOSE_ALL", "HOLD", "SKIP"}
 
-# Conviction-based size multipliers (per ARCHITECTURE.md sec 7.4)
-_CONVICTION_SIZE_MULTIPLIER = {
-    # score range -> multiplier
-    "moderate": 1.0,    # 0.5 - 0.7
-    "high": 1.15,       # 0.7 - 0.85
-    "very_high": 1.3,   # 0.85 - 1.0
-}
+# Conviction → risk_weight mapping (Sprint Portfolio-Risk-Manager Task 1).
+# This is the ONLY place this mapping lives. PortfolioRiskManager
+# multiplies the bot's base risk_per_trade by this weight to size the
+# trade — DecisionAgent never sees dollars and never does sizing math.
+#   conviction 0.50–0.60 → 0.75   (low — under-size)
+#   conviction 0.60–0.70 → 1.0    (moderate — base size)
+#   conviction 0.70–0.85 → 1.15   (high — slight upsize)
+#   conviction 0.85–1.00 → 1.30   (very high — full upsize)
+def risk_weight_from_conviction(score: float) -> float:
+    """Map a conviction score to a deterministic risk_weight.
+
+    Computed in plain Python — never delegated to the LLM. PortfolioRiskManager
+    consumes this value as the ``risk_weight`` argument to ``size_trade``.
+    Below the 0.50 conviction floor the engine SKIPs before sizing runs, so
+    the lowest band starts at 0.50.
+    """
+    if score >= 0.85:
+        return 1.30
+    if score >= 0.70:
+        return 1.15
+    if score >= 0.60:
+        return 1.0
+    return 0.75
 
 
 def _safe_default(conviction_score: float, has_position: bool, raw: str = "") -> TradeAction:
@@ -54,6 +76,7 @@ def _safe_default(conviction_score: float, has_position: bool, raw: str = "") ->
         atr_multiplier=None,
         reasoning=f"Parse failure — defaulting to {action}.",
         raw_output=raw,
+        risk_weight=None,
     )
 
 
@@ -61,8 +84,10 @@ class DecisionAgent:
     """LLM-based agent that selects trade actions from conviction output.
 
     The conviction scoring is already done by ConvictionAgent. DecisionAgent
-    focuses on: action selection, SL/TP computation, position sizing, and
-    safety check enforcement.
+    focuses on: action selection, SL/TP computation, safety check enforcement,
+    and attaching a deterministic ``risk_weight`` derived from conviction.
+    Dollar sizing is owned by PortfolioRiskManager downstream — DecisionAgent
+    never computes a position size in USD and never sees the account balance.
     """
 
     def __init__(self, llm_provider: LLMProvider, config: TradingConfig) -> None:
@@ -74,7 +99,6 @@ class DecisionAgent:
         conviction: ConvictionOutput,
         market_data: MarketData,
         current_position: Position | None,
-        account_balance: float,
         memory_context: str = "",
     ) -> TradeAction:
         """Decide on a trade action given conviction and position state.
@@ -83,19 +107,20 @@ class DecisionAgent:
         1. Quick exit: conviction below threshold → SKIP without LLM call
         2. Call LLM for action decision
         3. Parse response
-        4. Compute SL/TP and position size for entry actions
+        4. Compute SL/TP for entry actions (no dollar sizing)
         5. Run safety checks (may override action)
-        6. Return final TradeAction
+        6. Attach deterministic risk_weight derived from conviction
+        7. Return final TradeAction
 
         Args:
             conviction: ConvictionOutput from ConvictionAgent.
             market_data: Full MarketData with indicators, swings, etc.
             current_position: Existing position or None.
-            account_balance: Account balance in USD.
             memory_context: Formatted string with cycle memory.
 
         Returns:
-            TradeAction with all fields populated.
+            TradeAction with all fields populated except ``position_size``,
+            which PortfolioRiskManager fills in downstream.
         """
         has_position = current_position is not None
 
@@ -112,6 +137,7 @@ class DecisionAgent:
                 atr_multiplier=None,
                 reasoning=f"Conviction {conviction.conviction_score:.2f} below threshold {self._config.conviction_threshold}.",
                 raw_output="",
+                risk_weight=None,
             )
 
         try:
@@ -134,7 +160,6 @@ class DecisionAgent:
                 signal_quality=conviction.signal_quality,
                 contradictions=", ".join(conviction.contradictions) if conviction.contradictions else "none",
                 position_context=position_context,
-                account_balance=account_balance,
                 current_price=f"{current_price:.2f}" if current_price else "N/A",
                 atr=f"{atr:.4f}" if atr else "N/A",
                 memory_context=memory_context or "No prior history.",
@@ -152,13 +177,12 @@ class DecisionAgent:
             # 3. Parse LLM response
             action, reasoning, suggested_rr = self._parse_response(response.content, has_position)
 
-            # 4. Compute SL/TP and position size for entry actions
+            # 4. Compute SL/TP for entry actions (no dollar sizing — PRM owns that)
             sl_price = None
             tp1_price = None
             tp2_price = None
             rr_ratio = None
             atr_multiplier = None
-            position_size = None
 
             if action in ("LONG", "SHORT", "ADD_LONG", "ADD_SHORT") and current_price and atr > 0:
                 # Get dynamic profile
@@ -182,26 +206,6 @@ class DecisionAgent:
                 # Override RR if LLM suggested one
                 if suggested_rr is not None and suggested_rr > 0:
                     rr_ratio = suggested_rr
-
-                # Position sizing
-                risk_per_trade = 0.01  # 1% risk per trade
-                size_mult = self._conviction_size_multiplier(conviction.conviction_score)
-                is_pyramid = action in ("ADD_LONG", "ADD_SHORT")
-
-                position_size = compute_position_size(
-                    account_balance=account_balance,
-                    risk_per_trade=risk_per_trade,
-                    entry_price=current_price,
-                    sl_price=sl_price,
-                    max_position_pct=self._config.max_position_pct,
-                )
-                position_size *= size_mult
-
-                # Pyramid adds are 50% of base size
-                if is_pyramid:
-                    position_size *= 0.5
-
-                position_size = round(position_size, 2)
 
             # 5. Run safety checks
             daily_pnl = 0.0  # Will be injected by pipeline in production
@@ -229,17 +233,21 @@ class DecisionAgent:
 
                 # Clear sizing for non-entry actions
                 if action in ("HOLD", "SKIP"):
-                    position_size = None
                     sl_price = None
                     tp1_price = None
                     tp2_price = None
                     rr_ratio = None
                     atr_multiplier = None
 
+            # 6. Attach deterministic risk_weight (Python, not LLM) for entry actions only
+            risk_weight: float | None = None
+            if action in ("LONG", "SHORT", "ADD_LONG", "ADD_SHORT"):
+                risk_weight = risk_weight_from_conviction(conviction.conviction_score)
+
             return TradeAction(
                 action=action,
                 conviction_score=conviction.conviction_score,
-                position_size=position_size,
+                position_size=None,  # PRM populates this downstream
                 sl_price=sl_price,
                 tp1_price=tp1_price,
                 tp2_price=tp2_price,
@@ -247,6 +255,7 @@ class DecisionAgent:
                 atr_multiplier=atr_multiplier,
                 reasoning=reasoning,
                 raw_output=response.content,
+                risk_weight=risk_weight,
             )
 
         except Exception:
@@ -324,16 +333,6 @@ class DecisionAgent:
 
         vol_pct = float(market_data.indicators.get("volatility_percentile", 50.0))
         return get_dynamic_profile(base, regime, vol_pct)
-
-    @staticmethod
-    def _conviction_size_multiplier(score: float) -> float:
-        """Return position size multiplier based on conviction tier."""
-        if score >= 0.85:
-            return _CONVICTION_SIZE_MULTIPLIER["very_high"]
-        elif score >= 0.7:
-            return _CONVICTION_SIZE_MULTIPLIER["high"]
-        else:
-            return _CONVICTION_SIZE_MULTIPLIER["moderate"]
 
     @staticmethod
     def _extract_json(text: str) -> str | None:

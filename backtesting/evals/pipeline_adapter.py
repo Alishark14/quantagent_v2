@@ -76,7 +76,6 @@ class PipelineAdapter:
         mode: _MODE = "mock",
         api_key: str | None = None,
         model: str = "claude-sonnet-4-20250514",
-        account_balance: float = 10_000.0,
     ) -> None:
         """
         Args:
@@ -84,14 +83,16 @@ class PipelineAdapter:
             api_key: Anthropic API key for live mode. Falls back to
                 ``ANTHROPIC_API_KEY`` env var when ``None``.
             model: Claude model id used in live mode.
-            account_balance: Synthetic balance fed to DecisionAgent so
-                it can compute position sizing in live mode.
+
+        Note: Sprint Portfolio-Risk-Manager Task 1 stripped DecisionAgent of
+        position sizing, so the eval adapter no longer needs an account
+        balance — it asks DecisionAgent for trade INTENT only and reports
+        ``position_size_pct=None`` from live runs (PRM is wired in Task 4).
         """
         if mode not in ("mock", "live"):
             raise ValueError(f"mode must be 'mock' or 'live', got {mode!r}")
         self._mode = mode
         self._model = model
-        self._account_balance = account_balance
 
         # Lazy-construct heavy live-mode dependencies so importing this
         # module doesn't require the anthropic SDK or an API key.
@@ -200,6 +201,11 @@ class PipelineAdapter:
         last_close = self._last_close(scenario)
         sl, tp1, tp2 = self._mock_levels(direction, last_close)
 
+        # Mock-mode never goes through the real DecisionAgent so it has no
+        # risk_weight to carry — leave it None and let the framework grade
+        # direction + conviction + SL/TP only. The legacy ``position_size_pct``
+        # is preserved at 10% for entry directions so existing CI smoke
+        # assertions on that field don't break.
         return EvalOutput(
             direction=direction,
             conviction=conviction,
@@ -207,6 +213,7 @@ class PipelineAdapter:
             tp1_price=tp1,
             tp2_price=tp2,
             position_size_pct=0.10 if direction != "SKIP" else None,
+            risk_weight=None,
             reasoning=(
                 f"Mock pipeline: category={scenario.category!r} → "
                 f"{direction} (conviction={conviction:.2f})"
@@ -264,7 +271,6 @@ class PipelineAdapter:
             conviction=conviction,
             market_data=market_data,
             current_position=None,
-            account_balance=self._account_balance,
             memory_context="No prior history (eval scenario).",
         )
 
@@ -277,17 +283,18 @@ class PipelineAdapter:
         # CLOSE_ALL / HOLD without a position counts as SKIP.
         direction = self._collapse_action(action.action)
 
-        position_size_pct: float | None = None
-        if action.position_size is not None and self._account_balance > 0:
-            position_size_pct = action.position_size / self._account_balance
-
         return EvalOutput(
             direction=direction,
             conviction=float(action.conviction_score),
             sl_price=action.sl_price,
             tp1_price=action.tp1_price,
             tp2_price=action.tp2_price,
-            position_size_pct=position_size_pct,
+            # DecisionAgent no longer outputs dollar sizing — sizing is the
+            # PortfolioRiskManager's job (Sprint PRM Task 1). Until PRM is
+            # wired into the eval adapter we report None and let the eval
+            # framework grade direction + conviction + SL/TP only.
+            position_size_pct=None,
+            risk_weight=action.risk_weight,
             reasoning=action.reasoning,
             latency_ms=0.0,  # overwritten by __call__
             model_id=self._model_id(),

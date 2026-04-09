@@ -347,7 +347,11 @@ class SQLiteBotRepository(BotRepository):
         bot_id = bot.get("id") or str(uuid4())
         async with aiosqlite.connect(self._db_path) as db:
             mode = bot.get("mode", "live")
-            is_shadow = 1 if (bot.get("is_shadow") or mode == "shadow") else 0
+            # Auto-derive is_shadow for shadow AND paper modes. Paper bots
+            # trade on testnet — fake money — so their cycles + trades
+            # must be excluded from the live data moat just like shadow
+            # rows. Mirrors the postgres implementation byte-for-byte.
+            is_shadow = 1 if (bot.get("is_shadow") or mode in ("shadow", "paper")) else 0
             await db.execute(
                 """INSERT INTO bots
                    (id, user_id, symbol, timeframe, exchange, status,

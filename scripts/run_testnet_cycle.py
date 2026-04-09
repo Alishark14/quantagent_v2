@@ -135,6 +135,8 @@ def _print_action(action) -> None:
         print(f"  TP2 price:     {action.tp2_price}")
     if action.rr_ratio is not None:
         print(f"  R:R ratio:     {action.rr_ratio}")
+    if getattr(action, "risk_weight", None) is not None:
+        print(f"  Risk weight:   {action.risk_weight:.2f}  (PRM consumes this in Task 4)")
     if action.position_size is not None:
         print(f"  Suggested $:   {action.position_size:.2f}")
     if action.reasoning:
@@ -309,6 +311,10 @@ async def main(symbol: str, timeframe: str) -> int:
         SignalsReady,
     )
     from engine.execution.agent import DecisionAgent
+    from engine.execution.portfolio_risk_manager import (
+        PortfolioRiskConfig,
+        PortfolioRiskManager,
+    )
     from engine.memory.cross_bot import CrossBotSignals
     from engine.memory.cycle_memory import CycleMemory
     from engine.memory.reflection_rules import ReflectionRules
@@ -363,6 +369,15 @@ async def main(symbol: str, timeframe: str) -> int:
     conviction_agent = ConvictionAgent(llm)
     decision_agent = DecisionAgent(llm, config)
 
+    # Sprint Portfolio-Risk-Manager Task 4: real PRM, exercising the
+    # full production sizing path. Default config (1% risk per trade,
+    # 15% per-asset cap, 30% portfolio cap, 10/5/8% drawdown halt/
+    # reduce/resume). The pipeline calls `prm.size_trade(...)` after
+    # DecisionAgent returns and stamps the result onto
+    # `action.position_size` so the script's order block (further
+    # down) places exactly what PRM sized.
+    portfolio_risk_manager = PortfolioRiskManager(PortfolioRiskConfig())
+
     pipeline = AnalysisPipeline(
         ohlcv_fetcher=fetcher,
         flow_agent=flow_agent,
@@ -378,6 +393,7 @@ async def main(symbol: str, timeframe: str) -> int:
         config=config,
         bot_id="testnet-cycle",
         user_id="dev-testnet",
+        portfolio_risk_manager=portfolio_risk_manager,
     )
 
     # ── Step 5: Run one cycle ──
@@ -415,57 +431,92 @@ async def main(symbol: str, timeframe: str) -> int:
     placed_order = None
     if action.action in ("LONG", "SHORT"):
         side = "buy" if action.action == "LONG" else "sell"
-        # Compute a small testnet order size — round to 5 decimals so
-        # ccxt accepts the precision and the notional clears Hyperliquid's
-        # $10 minimum with a $5 buffer.
+        # Sprint Portfolio-Risk-Manager Task 4: PortfolioRiskManager
+        # is wired into the pipeline above and has already stamped
+        # ``action.position_size`` with the final dollar size after
+        # running every layer (drawdown throttle → fixed fractional →
+        # cost floor → per-asset cap → portfolio cap). The script
+        # just reads it. Apply a 50% testnet safety cap on top so a
+        # misconfigured PRM can never wipe more than half the testnet
+        # balance on a single smoke-test order.
         try:
             ticker = await adapter.get_ticker(symbol)
             current_price = float(ticker.get("last") or 0.0)
         except Exception as e:
             print(f"  ERROR fetching ticker: {e}")
             current_price = 0.0
+
+        try:
+            live_balance = float(await adapter.get_balance() or 0.0)
+        except Exception as e:
+            print(f"  ERROR fetching balance: {e}")
+            live_balance = 0.0
+
+        suggested_usd = float(action.position_size or 0.0)
+        risk_weight = float(getattr(action, "risk_weight", None) or 1.0)
+
         if current_price <= 0:
             print(f"  ERROR: ticker returned no price for {symbol}; skipping order.")
+        elif suggested_usd <= 0:
+            print(
+                "  ERROR: PRM produced size 0 — pipeline should have "
+                "converted to SKIP. Skipping order placement."
+            )
         else:
-            order_size = round(15.0 / current_price, 5)
-            print(f"  Current price: {current_price}")
-            print(f"  Order side:    {side}")
-            print(f"  Order size:    {order_size}  (~${order_size * current_price:.2f})")
-            print("  PLACING ORDER on testnet...")
-            try:
-                placed_order = await adapter.place_market_order(
-                    symbol=symbol, side=side, size=order_size
-                )
-            except Exception as e:
-                print(f"  ERROR placing order: {e}")
-                placed_order = None
+            cap_usd = live_balance * 0.5 if live_balance > 0 else suggested_usd
+            capped_usd = min(suggested_usd, cap_usd) if cap_usd > 0 else suggested_usd
+            cap_hit = capped_usd < suggested_usd
 
-            if placed_order is None:
-                pass
-            elif not placed_order.success:
-                print(f"  Order FAILED: {placed_order.error}")
+            order_size = round(capped_usd / current_price, 5)
+
+            print(f"  Live balance:    ${live_balance:.2f}")
+            print(f"  Risk weight:     {risk_weight:.2f}  (from DecisionAgent)")
+            print(f"  PRM $:           ${suggested_usd:.2f}  (PortfolioRiskManager)")
+            print(f"  Safety cap (50%):${cap_usd:.2f}  "
+                  f"{'-- CAP HIT' if cap_hit else ''}".rstrip())
+            print(f"  Capped $:        ${capped_usd:.2f}")
+            print(f"  Current price:   {current_price}")
+            print(f"  Order side:      {side}")
+            print(f"  Order size:      {order_size}  (~${order_size * current_price:.2f})")
+
+            if order_size <= 0:
+                print("  ERROR: computed order_size rounds to 0; no order placed.")
             else:
-                print(f"  Order OK")
-                print(f"    order_id:    {placed_order.order_id}")
-                print(f"    fill_price:  {placed_order.fill_price}")
-                print(f"    fill_size:   {placed_order.fill_size}")
-
-                # Wait briefly then dump positions
-                print("  Sleeping 2s for fill propagation...")
-                await asyncio.sleep(2)
+                print("  PLACING ORDER on testnet...")
                 try:
-                    positions = await adapter.get_positions(symbol)
+                    placed_order = await adapter.place_market_order(
+                        symbol=symbol, side=side, size=order_size
+                    )
                 except Exception as e:
-                    print(f"  ERROR fetching positions: {e}")
-                    positions = []
-                if not positions:
-                    print("  No open positions returned (may not have settled yet).")
+                    print(f"  ERROR placing order: {e}")
+                    placed_order = None
+
+                if placed_order is None:
+                    pass
+                elif not placed_order.success:
+                    print(f"  Order FAILED: {placed_order.error}")
                 else:
-                    for pos in positions:
-                        print(
-                            f"    {pos.symbol} {pos.direction} {pos.size} "
-                            f"@ {pos.entry_price}  uPnL=${pos.unrealized_pnl:.2f}"
-                        )
+                    print(f"  Order OK")
+                    print(f"    order_id:    {placed_order.order_id}")
+                    print(f"    fill_price:  {placed_order.fill_price}")
+                    print(f"    fill_size:   {placed_order.fill_size}")
+
+                    # Wait briefly then dump positions
+                    print("  Sleeping 2s for fill propagation...")
+                    await asyncio.sleep(2)
+                    try:
+                        positions = await adapter.get_positions(symbol)
+                    except Exception as e:
+                        print(f"  ERROR fetching positions: {e}")
+                        positions = []
+                    if not positions:
+                        print("  No open positions returned (may not have settled yet).")
+                    else:
+                        for pos in positions:
+                            print(
+                                f"    {pos.symbol} {pos.direction} {pos.size} "
+                                f"@ {pos.entry_price}  uPnL=${pos.unrealized_pnl:.2f}"
+                            )
     elif action.action == "SKIP":
         print("  Pipeline decided SKIP — no order placed.")
     else:

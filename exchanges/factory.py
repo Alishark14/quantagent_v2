@@ -2,9 +2,10 @@
 
 The factory is the central swap point that lets the rest of the
 codebase ask for ``get_adapter("hyperliquid")`` and never know whether
-it got back a real venue or a virtualised shadow exchange. As of the
-shadow-mode redesign (Task 3 of the Shadow Redesign sprint), the swap
-is driven by an explicit ``mode`` argument instead of a process-global
+it got back a real venue, a virtualised shadow exchange, or a real
+adapter pointed at the venue's testnet. As of the shadow-mode
+redesign (Task 3 of the Shadow Redesign sprint), the swap is driven
+by an explicit ``mode`` argument instead of a process-global
 ``is_shadow_mode()`` env-var check — this lets a single BotRunner
 manage live and shadow bots side-by-side from one process.
 
@@ -27,9 +28,19 @@ Per-mode behaviour:
   so that read-only authenticated methods (``fetch_user_fees``, account
   metadata) still work.
 
-Live and shadow caches are kept in separate dicts so toggling between
-modes (or constructing both kinds of adapter for different bots within
-the same process) doesn't poison the other namespace.
+* ``mode="paper"`` → returns the registered adapter from
+  ``cls._paper_instances`` constructed with ``testnet=True`` forwarded
+  into the ctor. Real signing capability, real order routing, but the
+  venue's testnet endpoint — fills come from the real testnet
+  orderbook with fake money. **NO key scrubbing** (we need to sign
+  real testnet orders) and **NO sim wrapping** (we want real fills).
+  Paper mode is the cheapest way to validate the production execution
+  path against a real venue without risking mainnet funds.
+
+Live, shadow, and paper caches are kept in separate dicts so
+toggling between modes (or constructing all three kinds of adapter for
+different bots within the same process) doesn't poison the other
+namespaces.
 """
 
 from __future__ import annotations
@@ -119,13 +130,17 @@ def _scrub_signing_keys(adapter: ExchangeAdapter) -> None:
 class ExchangeFactory:
     """Singleton-cached factory for exchange adapters.
 
-    Live and shadow instances are cached in separate dicts keyed by
-    ``name``. ``reset()`` clears everything; ``reset_shadow_cache()``
-    clears only the shadow namespace.
+    Live, shadow, and paper instances are cached in separate dicts
+    keyed by ``name``. ``reset()`` clears everything;
+    ``reset_shadow_cache()`` clears only the shadow namespace.
+    Paper mode shares its cache with neither — a process can hold
+    a live, a shadow, and a paper adapter for the same exchange
+    name simultaneously without interference.
     """
 
     _instances: dict[str, ExchangeAdapter] = {}
     _shadow_instances: dict[str, ExchangeAdapter] = {}
+    _paper_instances: dict[str, ExchangeAdapter] = {}
     _registry: dict[str, type[ExchangeAdapter]] = {}
 
     @classmethod
@@ -141,28 +156,43 @@ class ExchangeFactory:
 
         Args:
             name: Registered exchange name (e.g. ``"hyperliquid"``).
-            mode: ``"live"`` (default) or ``"shadow"``. Shadow returns
-                a ``SimulatedExchangeAdapter`` whose ``data_adapter`` is
-                a real adapter with its signing key scrubbed.
+            mode: ``"live"`` (default), ``"shadow"``, or ``"paper"``.
+
+                * ``"shadow"`` returns a ``SimulatedExchangeAdapter``
+                  whose ``data_adapter`` is a real adapter with its
+                  signing key scrubbed (virtual fills, real data).
+                * ``"paper"`` returns the real registered adapter
+                  constructed with ``testnet=True`` — real signing,
+                  real order routing, testnet endpoint.
+
             **kwargs: Forwarded to the real-adapter constructor (live
-                mode AND the data delegate built in shadow mode).
-                ``initial_balance`` is consumed by the shadow path and
-                NOT forwarded to the live constructor.
+                AND paper modes, plus the data delegate built in shadow
+                mode). ``initial_balance`` is consumed by the shadow
+                path and NOT forwarded to the live constructor. In
+                paper mode, ``testnet=True`` is injected before the
+                kwargs are forwarded — if the caller also passed an
+                explicit ``testnet`` value it is overridden to ``True``
+                so paper mode can never accidentally hit mainnet.
 
         Returns:
             The cached adapter instance for ``(name, mode)``.
 
         Raises:
-            ValueError: in live mode when ``name`` isn't registered.
-                (Shadow mode falls back to a sim with ``data_adapter=None``
-                so unregistered exchanges still get a usable testbed.)
+            ValueError: in live or paper mode when ``name`` isn't
+                registered. (Shadow mode falls back to a sim with
+                ``data_adapter=None`` so unregistered exchanges still
+                get a usable testbed.)
         """
         if mode == "shadow":
             return cls._build_shadow_adapter(name, **kwargs)
 
+        if mode == "paper":
+            return cls._build_paper_adapter(name, **kwargs)
+
         if mode != "live":
             raise ValueError(
-                f"Unknown adapter mode: {mode!r} (expected 'live' or 'shadow')"
+                f"Unknown adapter mode: {mode!r} "
+                "(expected 'live', 'shadow', or 'paper')"
             )
 
         # ── Live path ──
@@ -229,10 +259,55 @@ class ExchangeFactory:
         return instance
 
     @classmethod
+    def _build_paper_adapter(
+        cls, name: str, **kwargs: Any
+    ) -> ExchangeAdapter:
+        """Construct (or fetch from cache) a paper-mode adapter.
+
+        Paper mode is the simplest of the three: it returns the real
+        registered adapter constructed with ``testnet=True``. The
+        adapter signs real orders against the venue's testnet
+        orderbook, so we get end-to-end execution validation against
+        a real venue without risking mainnet funds.
+
+        ``testnet=True`` is FORCED — if the caller passed an explicit
+        ``testnet`` kwarg with any other value, it's overridden. The
+        whole point of paper mode is that you can never accidentally
+        hit mainnet through it. (For mainnet routing, ask for
+        ``mode="live"``.)
+
+        Unlike shadow mode there is NO key scrubbing (we need to sign
+        real testnet orders) and NO simulated wrapper (we want real
+        fills from the testnet orderbook).
+
+        Raises:
+            ValueError: when ``name`` isn't in the registry. Unlike
+                shadow mode, paper has no usable fallback for an
+                unregistered exchange — you need a real adapter
+                implementation to talk to a real testnet endpoint.
+        """
+        if name in cls._paper_instances:
+            return cls._paper_instances[name]
+        if name not in cls._registry:
+            raise ValueError(
+                f"Unknown exchange: {name} (paper mode requires a "
+                "registered adapter — testnet has no usable fallback)"
+            )
+
+        # Force testnet=True regardless of what the caller passed.
+        # The strict override matches the safety contract documented
+        # in get_adapter — paper mode can never hit mainnet.
+        kwargs.pop("testnet", None)
+        instance = cls._registry[name](testnet=True, **kwargs)
+        cls._paper_instances[name] = instance
+        return instance
+
+    @classmethod
     def reset(cls) -> None:
         """Clear all cached instances and registrations."""
         cls._instances.clear()
         cls._shadow_instances.clear()
+        cls._paper_instances.clear()
         cls._registry.clear()
 
     @classmethod
@@ -240,3 +315,9 @@ class ExchangeFactory:
         """Clear only the shadow-instance cache. Used in tests when
         rebuilding shadow adapters within a single process."""
         cls._shadow_instances.clear()
+
+    @classmethod
+    def reset_paper_cache(cls) -> None:
+        """Clear only the paper-instance cache. Used in tests when
+        rebuilding paper adapters within a single process."""
+        cls._paper_instances.clear()

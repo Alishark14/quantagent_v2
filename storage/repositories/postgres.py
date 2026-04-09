@@ -370,7 +370,13 @@ class PostgresBotRepository(BotRepository):
     async def save_bot(self, bot: dict) -> str:
         bot_id = bot.get("id") or str(uuid4())
         mode = bot.get("mode", "live")
-        is_shadow = bool(bot.get("is_shadow") or mode == "shadow")
+        # Auto-derive is_shadow for shadow AND paper modes. Paper bots
+        # trade on testnet — fake money — so their cycles + trades
+        # must be excluded from the live data moat just like shadow
+        # rows. The QuantDataScientist mining job uses the live_*
+        # views, which strip is_shadow=true rows, so this single auto-
+        # derive guarantees no testnet fills leak into alpha mining.
+        is_shadow = bool(bot.get("is_shadow") or mode in ("shadow", "paper"))
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO bots

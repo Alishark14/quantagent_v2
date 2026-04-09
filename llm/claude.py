@@ -258,7 +258,21 @@ class ClaudeProvider(LLMProvider):
                     },
                     "tags": ["quantagent", "v2", agent_name],
                 },
-                project_name=os.environ.get("LANGCHAIN_PROJECT", "quantagent-v2"),
+                # Per-call read of LANGCHAIN_PROJECT — the CLI dispatcher
+                # in `quantagent/main.py` sets this env var to
+                # `quantagent-shadow` / `quantagent-paper` / leaves the
+                # operator's `.env` value (typically `quantagent-live`)
+                # depending on which mode flag was passed. Reading per
+                # call instead of caching at module load means a future
+                # mixed-mode process that wants per-bot routing can
+                # mutate the env var around individual LLM calls without
+                # restarting. Default fallback is `quantagent-live` so
+                # an operator who runs the bare `python -m quantagent run`
+                # without setting LANGCHAIN_PROJECT in `.env` lands in
+                # the live project, NOT in some legacy `quantagent-v2`
+                # bucket — matches the convention the CLI dispatcher
+                # set up for the other two modes.
+                project_name=os.environ.get("LANGCHAIN_PROJECT", "quantagent-live"),
                 end_time=None,  # auto-completed
             )
         except Exception as e:

@@ -164,3 +164,43 @@ def test_factory_passes_shadow_mode_to_adapter_factory():
     )
     factory("BTC-USDC", "shadow-bot-1")
     assert captured == [("hyperliquid", "shadow")]
+
+
+def test_factory_wires_portfolio_risk_manager_into_pipeline():
+    """Sprint Portfolio-Risk-Manager Task 4: every bot the factory
+    builds must come with a fully-constructed PortfolioRiskManager
+    threaded into its AnalysisPipeline. Without this, the pipeline
+    would never call PRM and entry actions would have
+    `position_size=None`, which the executor refuses to place."""
+    from engine.execution.portfolio_risk_manager import PortfolioRiskManager
+
+    factory = _make_bot_factory(
+        repos=_make_repos_stub(),
+        llm_provider=_StubLLM(),
+        adapter_factory=lambda _ex, mode="live": _make_adapter_stub(),
+        event_bus=InProcessBus(),
+        feature_flags=FeatureFlags(),
+    )
+    bot = factory("BTC-USDC", "test-bot-prm")
+    assert isinstance(bot._pipeline._prm, PortfolioRiskManager)
+    # Spec defaults from the factory wiring
+    assert bot._pipeline._prm.config.risk_per_trade_pct == 0.01
+    assert bot._pipeline._prm.config.per_asset_cap_pct == 0.15
+    assert bot._pipeline._prm.config.portfolio_cap_pct == 0.30
+
+
+def test_factory_constructs_one_prm_per_bot_not_shared():
+    """Each bot must get its own PRM instance — sharing one across bots
+    would mix drawdown hysteresis state between unrelated portfolios.
+    Pin this so a future "optimization" that hoists PRM construction
+    out of the closure doesn't accidentally cross-contaminate."""
+    factory = _make_bot_factory(
+        repos=_make_repos_stub(),
+        llm_provider=_StubLLM(),
+        adapter_factory=lambda _ex, mode="live": _make_adapter_stub(),
+        event_bus=InProcessBus(),
+        feature_flags=FeatureFlags(),
+    )
+    bot1 = factory("BTC-USDC", "bot-1")
+    bot2 = factory("ETH-USDC", "bot-2")
+    assert bot1._pipeline._prm is not bot2._pipeline._prm

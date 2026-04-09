@@ -112,7 +112,14 @@ class ConvictionOutput:
 
 @dataclass
 class TradeAction:
-    """Decision output from the DecisionAgent."""
+    """Decision output from the DecisionAgent.
+
+    DecisionAgent outputs trade INTENT only — direction, SL/TP levels, and a
+    deterministic ``risk_weight`` derived from conviction. Dollar sizing is
+    owned downstream by ``PortfolioRiskManager``; ``position_size`` is left
+    here as ``None`` by DecisionAgent and populated by PRM in the pipeline
+    after sizing rules run (Sprint Portfolio-Risk-Manager Task 1).
+    """
 
     action: str  # "LONG" | "SHORT" | "ADD_LONG" | "ADD_SHORT" | "CLOSE_ALL" | "HOLD" | "SKIP"
     conviction_score: float
@@ -124,6 +131,7 @@ class TradeAction:
     atr_multiplier: float | None
     reasoning: str
     raw_output: str
+    risk_weight: float | None = None  # 0.75 / 1.0 / 1.15 / 1.3, None for non-entry actions
 
     def to_dict(self) -> dict:
         return asdict(self)

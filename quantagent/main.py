@@ -1,11 +1,17 @@
 """QuantAgent CLI entry point.
 
 Commands:
-    python -m quantagent run       — Start BotRunner + FastAPI together
-    python -m quantagent run --shadow — Same runner, sim exchange + shadow DB
-    python -m quantagent migrate   — Run Alembic migrations (upgrade to head)
-    python -m quantagent seed      — Seed dev database with test data
-    python -m quantagent           — Show help
+    python -m quantagent run               — Start BotRunner + FastAPI (live mode)
+    python -m quantagent run --shadow      — Load shadow bots, simulated execution
+    python -m quantagent run --paper       — Load paper bots, real testnet orders, port 8001
+    python -m quantagent migrate           — Run Alembic migrations (upgrade to head)
+    python -m quantagent seed              — Seed dev database with test data
+    python -m quantagent                   — Show help
+
+``--shadow`` and ``--paper`` are MUTUALLY EXCLUSIVE — passing both
+exits with an error. To run shadow and paper simultaneously, start
+two separate processes in two tmux sessions on different ports
+(shadow defaults to 8000, paper defaults to 8001).
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ def _make_bot_factory(
     event_bus,
     feature_flags=None,
     shadow_mode: bool = False,
+    paper_mode: bool = False,
 ) -> Callable[[str, str], object]:
     """Build a `(symbol, bot_id) -> TraderBot` factory closure.
 
@@ -76,6 +83,10 @@ def _make_bot_factory(
     from engine.data.ohlcv import OHLCVFetcher
     from engine.execution.agent import DecisionAgent
     from engine.execution.executor import Executor
+    from engine.execution.portfolio_risk_manager import (
+        PortfolioRiskConfig,
+        PortfolioRiskManager,
+    )
     from engine.memory.cross_bot import CrossBotSignals
     from engine.memory.cycle_memory import CycleMemory
     from engine.memory.reflection_rules import ReflectionRules
@@ -94,8 +105,21 @@ def _make_bot_factory(
     # so every bot the factory builds belongs to this mode. The runner
     # also passes per-bot mode through to its sentinel adapter — these
     # two paths agree in the production startup flow because of the
-    # mode-based bot filter.
-    factory_mode = "shadow" if shadow_mode else "live"
+    # mode-based bot filter. Shadow takes precedence over paper if
+    # both flags are set (defensive — main.py's CLI dispatcher should
+    # already reject the combination, but the factory honours one
+    # canonical resolution rule regardless).
+    if shadow_mode:
+        factory_mode = "shadow"
+    elif paper_mode:
+        factory_mode = "paper"
+    else:
+        factory_mode = "live"
+    # Mark every cycle this factory's pipelines persist as belonging
+    # to the shadow data partition iff this is a shadow OR paper run.
+    # Live cycles stay is_shadow=False so they show up in the live_*
+    # views the QuantDataScientist mines.
+    pipeline_is_shadow = shadow_mode or paper_mode
 
     def factory(symbol: str, bot_id: str):
         # Look up bot config (timeframe, exchange, user_id) from the DB
@@ -141,6 +165,18 @@ def _make_bot_factory(
         conviction_agent = ConvictionAgent(llm_provider)
         decision_agent = DecisionAgent(llm_provider, config)
 
+        # Sprint Portfolio-Risk-Manager Task 4: one PRM per bot.
+        # PRM is stateful with respect to the drawdown hysteresis flag
+        # (`_halted`) and the per-bot peak-equity tracker lives on the
+        # AnalysisPipeline, so each bot needs its own instance —
+        # sharing one PRM across bots would mix drawdown state
+        # between unrelated portfolios. Default config is the spec
+        # baseline (1% risk per trade, 15% per-asset cap, 30%
+        # portfolio cap, 10/5/8% drawdown halt/reduce/resume) — when
+        # we need per-bot tuning we'll thread a PortfolioRiskConfig
+        # via bot config_json.
+        portfolio_risk_manager = PortfolioRiskManager(PortfolioRiskConfig())
+
         # Execution + Sentinel position manager
         executor = Executor(adapter, event_bus, config)
         position_manager = PositionManager(adapter, event_bus)
@@ -167,6 +203,8 @@ def _make_bot_factory(
             config=config,
             bot_id=bot_id,
             user_id=user_id,
+            is_shadow=pipeline_is_shadow,
+            portfolio_risk_manager=portfolio_risk_manager,
         )
 
         return TraderBot(
@@ -198,21 +236,41 @@ async def _run_server() -> None:
     from quantagent.version import ENGINE_VERSION
     logger.info(f"QuantAgent {ENGINE_VERSION} starting...")
 
-    # ── Detect shadow mode ──
-    # The --shadow CLI flag (handled in main()) sets QUANTAGENT_SHADOW=1.
-    # As of the shadow-mode redesign, this is a SIMPLE PROCESS FLAG —
-    # there's no DATABASE_URL swap, no ensure_shadow_db pre-create, no
-    # configure_shadow side-effects. The shared `quantagent` database
-    # holds both live and shadow rows differentiated by the new
-    # is_shadow / mode columns from Alembic 003. The flag drives:
-    #   1. which bots get loaded (filtered by `mode='shadow'` here)
-    #   2. how the adapter_factory builds adapters (passes mode="shadow")
-    #   3. logging banner so operators see the warning
+    # ── Detect shadow / paper mode ──
+    # The --shadow and --paper CLI flags (handled in main()) set
+    # QUANTAGENT_SHADOW=1 / QUANTAGENT_PAPER=1 respectively. Both are
+    # SIMPLE PROCESS FLAGS — no DATABASE_URL swap, no ensure_shadow_db
+    # pre-create, no configure_shadow side-effects. The shared
+    # `quantagent` database holds all three modes (live / shadow /
+    # paper) via the per-row is_shadow / mode columns from Alembic 003
+    # (mode column added there, paper added to the auto-derive set in
+    # Paper Trading Task 2). The flags drive:
+    #   1. which bots get loaded (filtered by exact `mode` match here)
+    #   2. how the adapter_factory builds adapters (passes mode= through)
+    #   3. logging banner so operators see the warning at boot
+    #   4. is_shadow propagation into AnalysisPipeline cycle records
+    #      (paper writes is_shadow=True so testnet fills are kept out
+    #      of the live data moat — same as shadow)
+    #
+    # The mutual-exclusion check lives in main() — by the time we
+    # reach this branch we know at most ONE of these flags is set.
+    # The defensive `elif` chain below honours that contract.
     shadow_mode = os.environ.get("QUANTAGENT_SHADOW") == "1"
+    paper_mode = os.environ.get("QUANTAGENT_PAPER") == "1"
+
     if shadow_mode:
         logger.warning(
             "⚠️ SHADOW MODE — loading shadow bots, simulated execution only"
         )
+        bot_mode = "shadow"
+    elif paper_mode:
+        logger.warning(
+            "⚠️ PAPER MODE — real orders on Hyperliquid testnet"
+        )
+        bot_mode = "paper"
+    else:
+        logger.info("LIVE MODE — real orders on mainnet")
+        bot_mode = "live"
 
     # ── Initialize infrastructure ──
     logger.info("Initializing infrastructure...")
@@ -245,6 +303,7 @@ async def _run_server() -> None:
         event_bus=event_bus,
         feature_flags=feature_flags,
         shadow_mode=shadow_mode,
+        paper_mode=paper_mode,
     )
 
     bot_manager = BotManager(
@@ -266,10 +325,11 @@ async def _run_server() -> None:
 
     # Load active bots from DB filtered by mode so the runner restores
     # only the bots that belong to this process's mode. A shadow boot
-    # never sees live bots and vice versa.
-    mode_label = "shadow" if shadow_mode else "live"
-    active_bots = await repos.bots.get_active_bots_by_mode(mode_label)
-    logger.info(f"Loaded {len(active_bots)} {mode_label} bots from database")
+    # never sees live or paper bots; a paper boot never sees live or
+    # shadow bots; a live boot never sees shadow or paper bots. The
+    # `bot_mode` was resolved by the shadow/paper detection block above.
+    active_bots = await repos.bots.get_active_bots_by_mode(bot_mode)
+    logger.info(f"Loaded {len(active_bots)} {bot_mode} bots from database")
     await runner.start_with_bots(active_bots)
 
     # ── Create FastAPI app ──
@@ -361,18 +421,67 @@ def main() -> None:
     """CLI entry point."""
     args = sys.argv[1:]
 
-    # ``--shadow`` is global: it applies to any subcommand and is
-    # stripped from argv before subcommand dispatch so the existing
-    # positional logic keeps working. The flag is now a SIMPLE PROCESS
-    # MARKER — it sets QUANTAGENT_SHADOW=1 and that's it. There is no
-    # DB URL swap, no config mutation, no shadow-DB pre-create. The
-    # shared `quantagent` database holds both modes via the per-row
-    # is_shadow / mode columns; _run_server() reads the env var, loads
-    # bots filtered by mode, and passes the per-bot mode through to
-    # the adapter factory.
-    if "--shadow" in args:
+    # ``--shadow`` and ``--paper`` are global mode flags: they apply to
+    # any subcommand and are stripped from argv before subcommand
+    # dispatch so the existing positional logic keeps working. Each
+    # flag is a SIMPLE PROCESS MARKER — it sets the corresponding
+    # `QUANTAGENT_*` env var and that's it. There is no DB URL swap,
+    # no config mutation, no shadow-DB pre-create. The shared
+    # `quantagent` database holds all three modes (live / shadow /
+    # paper) via the per-row is_shadow / mode columns; _run_server()
+    # reads the env vars, loads bots filtered by mode, and passes the
+    # per-bot mode through to the adapter factory.
+    #
+    # Mode precedence: the two flags are MUTUALLY EXCLUSIVE because
+    # one process is one mode. Trying both at once is almost certainly
+    # an operator typo or misunderstanding — the safest response is to
+    # exit loudly so they pick the one they actually meant. (For
+    # genuinely running both modes simultaneously the operator must
+    # start two separate processes in two tmux sessions on different
+    # ports — that's the post-sprint deployment workflow.)
+    shadow_requested = "--shadow" in args
+    paper_requested = "--paper" in args
+
+    if shadow_requested and paper_requested:
+        print("ERROR: --shadow and --paper are mutually exclusive.")
+        print("       Run them in separate processes (different ports).")
+        sys.exit(1)
+
+    if shadow_requested:
         args = [a for a in args if a != "--shadow"]
         os.environ["QUANTAGENT_SHADOW"] = "1"
+        # Route LangSmith traces to a separate project so shadow-mode
+        # cycles don't pollute the live observability dashboard. Plain
+        # assignment (NOT setdefault) — the operator's `.env` almost
+        # certainly points at `quantagent-live`, and we explicitly want
+        # to override that for the shadow process. Mirrors the paper
+        # branch below for symmetry. (Per-bot routing within a
+        # mixed-mode process is a future enhancement — see Task 4
+        # spec deviation #1 in SPRINT_WEEK7_paper_Update.md for the
+        # full rationale on why we kept this process-level for now.)
+        os.environ["LANGCHAIN_PROJECT"] = "quantagent-shadow"
+
+    if paper_requested:
+        args = [a for a in args if a != "--paper"]
+        os.environ["QUANTAGENT_PAPER"] = "1"
+        # Paper mode talks to the venue's testnet endpoint. The
+        # HyperliquidAdapter constructor reads HYPERLIQUID_TESTNET first
+        # (then branches credential lookup to the dedicated _TESTNET_*
+        # env vars), so flipping this here is the cleanest way to make
+        # sure every adapter built in this process uses testnet
+        # regardless of how it was constructed (factory path, direct
+        # ctor in scripts, etc.).
+        os.environ["HYPERLIQUID_TESTNET"] = "true"
+        # Route LangSmith traces to a separate project so paper-mode
+        # cycles don't pollute live observability dashboards. The env
+        # var is read by both `langsmith.Client` and `llm/claude.py`'s
+        # tracing path (which honours `LANGCHAIN_PROJECT` per-process).
+        os.environ["LANGCHAIN_PROJECT"] = "quantagent-paper"
+        # Default port to 8001 so paper can run alongside a shadow or
+        # live process on the same host without colliding. ``setdefault``
+        # so an operator who explicitly sets ``PORT=9000`` keeps their
+        # override — we only fill in the default when nothing is set.
+        os.environ.setdefault("PORT", "8001")
 
     if not args or args[0] in ("--help", "-h"):
         print("QuantAgent v2 — AI-powered trading engine")
@@ -380,6 +489,7 @@ def main() -> None:
         print("Usage:")
         print("  python -m quantagent run            Start BotRunner + API server")
         print("  python -m quantagent run --shadow   Load shadow bots, simulated execution")
+        print("  python -m quantagent run --paper    Load paper bots, testnet exchange + port 8001")
         print("  python -m quantagent migrate        Run database migrations (Alembic)")
         print("  python -m quantagent seed           Seed dev database with test data")
         print("  python -m quantagent --help         Show this help")

@@ -40,6 +40,7 @@ def restore_environment():
     }
     saved_instances = dict(ExchangeFactory._instances)
     saved_shadow = dict(ExchangeFactory._shadow_instances)
+    saved_paper = dict(ExchangeFactory._paper_instances)
     saved_registry = dict(ExchangeFactory._registry)
 
     yield
@@ -53,6 +54,8 @@ def restore_environment():
     ExchangeFactory._instances.update(saved_instances)
     ExchangeFactory._shadow_instances.clear()
     ExchangeFactory._shadow_instances.update(saved_shadow)
+    ExchangeFactory._paper_instances.clear()
+    ExchangeFactory._paper_instances.update(saved_paper)
     ExchangeFactory._registry.clear()
     ExchangeFactory._registry.update(saved_registry)
 
@@ -415,9 +418,228 @@ class TestShadowModeParameter:
 
     def test_invalid_mode_raises(self):
         """Belt-and-braces: an unknown mode value should fail loudly,
-        not silently fall through to live."""
+        not silently fall through to live.
+
+        Note: as of Paper Trading Task 2, ``mode="paper"`` is now a
+        valid mode (returns the real adapter with ``testnet=True``).
+        This test pins that an UNKNOWN mode still raises — using a
+        deliberately bogus value that will never be implemented.
+        """
         ExchangeFactory.reset()
         ExchangeFactory.register("hyperliquid", _CredentialedAdapter)
 
         with pytest.raises(ValueError, match="Unknown adapter mode"):
-            ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+            ExchangeFactory.get_adapter("hyperliquid", mode="bogus-mode")
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading Task 2 — explicit mode="paper" parameter
+# ---------------------------------------------------------------------------
+
+
+class _TestnetAwareAdapter(_LiveAdapter):
+    """Live-adapter stand-in that records its ``testnet`` ctor arg.
+
+    Mirrors the structure of ``HyperliquidAdapter``: an inner ccxt-like
+    object on ``self._exchange`` carrying ``privateKey`` and
+    ``walletAddress``, plus a wrapper-level ``_private_key``. Crucially
+    its ``__init__`` accepts ``testnet: bool = False`` so the paper
+    mode tests can verify the factory passes ``testnet=True`` through.
+    """
+
+    def __init__(
+        self,
+        wallet_address: str = "0xWALLET",
+        private_key: str = "deadbeef" * 8,
+        secret: str = "topsecret",
+        testnet: bool = False,
+    ) -> None:
+        self._private_key = private_key
+        self._testnet = testnet
+
+        class _InnerCcxt:
+            pass
+
+        inner = _InnerCcxt()
+        inner.privateKey = private_key
+        inner.secret = secret
+        inner.walletAddress = wallet_address
+        inner.apiKey = "public-id-not-secret"
+        self._exchange = inner
+
+    async def fetch_ohlcv(self, symbol, timeframe, limit=100, since=None):
+        # Paper mode reads real testnet OHLCV; this stub returns a
+        # canned candle so the delegate-path test can prove the call
+        # actually reached the registered adapter (and that the
+        # testnet flag is in scope when it does).
+        return [
+            {
+                "timestamp": 1700000000000,
+                "open": 100.0, "high": 101.0,
+                "low": 99.0, "close": 100.5, "volume": 10.0,
+                "_testnet_seen": self._testnet,
+            },
+        ]
+
+
+class TestPaperModeParameter:
+    """Paper Trading Task 2 acceptance criteria — five explicit cases.
+
+    Paper mode is the SIMPLEST of the three modes:
+        - Returns the registered adapter (NOT a SimulatedExchangeAdapter)
+        - Constructed with ``testnet=True`` injected by the factory
+        - Credentials are NOT scrubbed (we sign real testnet orders)
+        - No wrapping (real fills from the real testnet orderbook)
+
+    These tests use mocks for the adapter constructor so nothing
+    actually touches a network — the spec is "use mocks for the
+    adapter constructor — don't actually connect to testnet in tests".
+    """
+
+    def test_1_paper_mode_returns_real_adapter_with_testnet_True(self):
+        """``mode="paper"`` returns the registered adapter
+        constructed with ``testnet=True`` forwarded to ``__init__``."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+        assert isinstance(adapter, _TestnetAwareAdapter)
+        # The factory MUST inject testnet=True even though the caller
+        # didn't pass it. Verifies the explicit `testnet=True` line in
+        # _build_paper_adapter.
+        assert adapter._testnet is True
+
+    def test_2_paper_mode_does_NOT_scrub_keys(self):
+        """Paper mode signs real testnet orders, so credentials must
+        be PRESERVED (unlike shadow mode which scrubs them).
+
+        All three credential surfaces (inner ccxt privateKey + secret,
+        wrapper-level _private_key) stay populated.
+        """
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+
+        # Inner ccxt-style object credentials INTACT
+        assert adapter._exchange.privateKey == "deadbeef" * 8
+        assert adapter._exchange.secret == "topsecret"
+        assert adapter._exchange.walletAddress == "0xWALLET"
+
+        # Wrapper-level signing attribute INTACT
+        assert adapter._private_key == "deadbeef" * 8
+
+    def test_3_paper_mode_does_NOT_wrap_in_simulated_exchange_adapter(self):
+        """Paper mode returns a real adapter — orders go to the real
+        testnet orderbook, NOT a virtual portfolio."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+
+        assert not isinstance(adapter, SimulatedExchangeAdapter)
+        # And it has no _data_adapter attribute (only the sim has that)
+        assert not hasattr(adapter, "_data_adapter")
+
+    def test_4_paper_mode_adapter_can_call_fetch_ohlcv(self):
+        """Read-only data calls hit the paper adapter directly (no
+        delegate). Verifies that data calls work end-to-end on the
+        paper instance and that the testnet flag is observable to
+        the adapter's own methods."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        adapter = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+
+        import asyncio
+        candles = asyncio.run(adapter.fetch_ohlcv("BTC-USDC", "1h"))
+        assert len(candles) == 1
+        # The stub stamps its own _testnet flag onto the candle so
+        # the test can prove the testnet=True kwarg actually reached
+        # the live adapter __init__ (not just stored as an attribute).
+        assert candles[0]["_testnet_seen"] is True
+
+    def test_5_shadow_paper_live_return_distinct_adapter_configurations(self):
+        """All three modes coexist in one process without poisoning
+        each other. Live, shadow, and paper caches are independent;
+        the three returned adapters are different objects with
+        different types/configurations.
+        """
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        live = ExchangeFactory.get_adapter("hyperliquid", mode="live")
+        shadow = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        paper = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+
+        # Distinct instances
+        assert live is not shadow
+        assert live is not paper
+        assert shadow is not paper
+
+        # Distinct types — live and paper are real, shadow is the sim
+        assert isinstance(live, _TestnetAwareAdapter)
+        assert isinstance(shadow, SimulatedExchangeAdapter)
+        assert isinstance(paper, _TestnetAwareAdapter)
+
+        # The two real adapters DIFFER in their testnet flag
+        assert live._testnet is False
+        assert paper._testnet is True
+
+        # The shadow sim's data delegate is yet ANOTHER instance
+        # (not the live cache and not the paper cache), with its key
+        # scrubbed — proving the three caches are fully isolated.
+        assert shadow._data_adapter is not live
+        assert shadow._data_adapter is not paper
+        assert shadow._data_adapter._private_key is None  # scrubbed
+        assert paper._private_key == "deadbeef" * 8       # NOT scrubbed
+        assert live._private_key == "deadbeef" * 8        # NOT scrubbed
+
+    def test_paper_mode_singleton_per_exchange_name(self):
+        """Two consecutive paper-mode calls return the same cached
+        instance, mirroring the live and shadow caching contracts."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        a1 = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+        a2 = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+        assert a1 is a2
+
+    def test_paper_mode_unknown_exchange_raises(self):
+        """Unlike shadow (which falls back to a data-less sim), paper
+        mode requires a registered adapter — a real testnet endpoint
+        has no usable fallback."""
+        ExchangeFactory.reset()
+
+        with pytest.raises(ValueError, match="Unknown exchange"):
+            ExchangeFactory.get_adapter("ibkr", mode="paper")
+
+    def test_paper_mode_caller_testnet_kwarg_is_overridden(self):
+        """Defense in depth: even if the caller explicitly passes
+        ``testnet=False``, the factory forces ``testnet=True`` so
+        paper mode can never accidentally hit mainnet."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        adapter = ExchangeFactory.get_adapter(
+            "hyperliquid", mode="paper", testnet=False
+        )
+        assert adapter._testnet is True
+
+    def test_reset_paper_cache_only(self):
+        """``reset_paper_cache()`` clears only the paper namespace —
+        live and shadow caches survive."""
+        ExchangeFactory.reset()
+        ExchangeFactory.register("hyperliquid", _TestnetAwareAdapter)
+
+        live = ExchangeFactory.get_adapter("hyperliquid")
+        shadow = ExchangeFactory.get_adapter("hyperliquid", mode="shadow")
+        paper = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+
+        ExchangeFactory.reset_paper_cache()
+        assert ExchangeFactory._paper_instances == {}
+        assert "hyperliquid" in ExchangeFactory._instances
+        assert "hyperliquid" in ExchangeFactory._shadow_instances
+        # Re-fetching paper after reset gives a fresh instance
+        paper2 = ExchangeFactory.get_adapter("hyperliquid", mode="paper")
+        assert paper2 is not paper
