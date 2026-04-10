@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
+
 import pytest
 
 from engine.data.flow import FlowAgent
 from engine.data.flow.base import FlowProvider
-from engine.data.flow.crypto import CryptoFlowProvider
+from engine.data.flow.crypto import (
+    CryptoFlowProvider,
+    _OI_BUFFER_MAXLEN,
+    _OI_LOOKBACK_SECONDS,
+)
 from engine.types import AdapterCapabilities, FlowOutput, OrderResult, Position
 from exchanges.base import ExchangeAdapter
 
@@ -233,6 +240,164 @@ class TestCryptoFlowProvider:
 
     def test_name(self) -> None:
         assert CryptoFlowProvider().name() == "crypto"
+
+
+# ---------------------------------------------------------------------------
+# OI history buffer tests
+# ---------------------------------------------------------------------------
+
+
+class TestOIHistoryBuffer:
+    """Tests for the per-symbol rolling OI history buffer."""
+
+    @pytest.mark.asyncio
+    async def test_first_call_oi_change_is_none(self) -> None:
+        """Fresh provider, first call: oi_change_4h is None (buffer empty)."""
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=1_000_000.0)
+        provider = CryptoFlowProvider()
+
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data["open_interest"] == 1_000_000.0
+        assert data.get("oi_change_4h") is None
+        assert data["oi_trend"] == "STABLE"
+
+    @pytest.mark.asyncio
+    async def test_buffer_warmup_returns_none(self) -> None:
+        """Buffer with < 4h of data: oi_change_4h stays None."""
+        provider = CryptoFlowProvider()
+        now = time.time()
+
+        # Inject 10 snapshots spanning only 5 minutes
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+        for i in range(10):
+            provider._oi_history["BTC-USDC"].append((now - 300 + i * 30, 1_000_000.0))
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=1_050_000.0)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data.get("oi_change_4h") is None
+        assert data["oi_trend"] == "STABLE"
+
+    @pytest.mark.asyncio
+    async def test_4h_buffer_computes_delta(self) -> None:
+        """Provider with 4h of synthetic snapshots: oi_change_4h computed correctly."""
+        provider = CryptoFlowProvider()
+        now = time.time()
+
+        old_oi = 1_000_000.0
+        new_oi = 1_050_000.0  # +5%
+
+        # Inject: one entry before the 4h window, one 10s inside it.
+        # The +10 margin ensures the entry is inside the window even
+        # after the small time delta between now and fetch's time.time().
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS - 60, old_oi))
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS + 10, old_oi))
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=new_oi)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        expected_change = (new_oi - old_oi) / old_oi  # 0.05
+        assert data["oi_change_4h"] is not None
+        assert abs(data["oi_change_4h"] - expected_change) < 1e-9
+
+    @pytest.mark.asyncio
+    async def test_oi_building(self) -> None:
+        """OI rose 5% over 4h: oi_trend = BUILDING."""
+        provider = CryptoFlowProvider()
+        now = time.time()
+        old_oi = 1_000_000.0
+        new_oi = 1_050_000.0  # +5%
+
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS - 60, old_oi))
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS + 10, old_oi))
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=new_oi)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data["oi_trend"] == "BUILDING"
+        assert data["oi_change_4h"] > 0.02
+
+    @pytest.mark.asyncio
+    async def test_oi_dropping(self) -> None:
+        """OI dropped 3% over 4h: oi_trend = DROPPING."""
+        provider = CryptoFlowProvider()
+        now = time.time()
+        old_oi = 1_000_000.0
+        new_oi = 970_000.0  # -3%
+
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS - 60, old_oi))
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS + 10, old_oi))
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=new_oi)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data["oi_trend"] == "DROPPING"
+        assert data["oi_change_4h"] < -0.02
+
+    @pytest.mark.asyncio
+    async def test_oi_stable(self) -> None:
+        """OI changed 1% over 4h: oi_trend = STABLE."""
+        provider = CryptoFlowProvider()
+        now = time.time()
+        old_oi = 1_000_000.0
+        new_oi = 1_010_000.0  # +1% — within ±2% threshold
+
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS - 60, old_oi))
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS + 10, old_oi))
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=new_oi)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data["oi_trend"] == "STABLE"
+        assert data["oi_change_4h"] is not None
+        assert abs(data["oi_change_4h"] - 0.01) < 1e-9
+
+    def test_buffer_maxlen_respected(self) -> None:
+        """Adding 500 entries doesn't grow beyond 480."""
+        provider = CryptoFlowProvider()
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+
+        for i in range(500):
+            provider._oi_history["BTC-USDC"].append((float(i), 1_000_000.0 + i))
+
+        assert len(provider._oi_history["BTC-USDC"]) == _OI_BUFFER_MAXLEN
+
+    @pytest.mark.asyncio
+    async def test_multiple_symbols_tracked_independently(self) -> None:
+        """Multiple symbols tracked independently in the same provider instance."""
+        provider = CryptoFlowProvider()
+        now = time.time()
+
+        # Warm up BTC with 4h+ of data showing OI building
+        provider._oi_history["BTC-USDC"] = deque(maxlen=_OI_BUFFER_MAXLEN)
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS - 60, 1_000_000.0))
+        provider._oi_history["BTC-USDC"].append((now - _OI_LOOKBACK_SECONDS + 10, 1_000_000.0))
+
+        # ETH has no history — should be cold start
+        adapter_btc = MockFlowAdapter(funding_rate=0.001, open_interest=1_050_000.0)
+        adapter_eth = MockFlowAdapter(funding_rate=0.001, open_interest=500_000.0)
+
+        data_btc = await provider.fetch("BTC-USDC", adapter_btc)
+        data_eth = await provider.fetch("ETH-USDC", adapter_eth)
+
+        # BTC should have computed delta (warm buffer)
+        assert data_btc["oi_change_4h"] is not None
+        assert data_btc["oi_trend"] == "BUILDING"
+
+        # ETH should be cold start (None)
+        assert data_eth.get("oi_change_4h") is None
+        assert data_eth["oi_trend"] == "STABLE"
+
+        # Both symbols should have separate buffers
+        assert "BTC-USDC" in provider._oi_history
+        assert "ETH-USDC" in provider._oi_history
+        assert len(provider._oi_history["BTC-USDC"]) == 3  # 2 injected + 1 from fetch
+        assert len(provider._oi_history["ETH-USDC"]) == 1  # just from fetch
 
 
 # ---------------------------------------------------------------------------

@@ -38,19 +38,15 @@ without touching the agent's flow control.
 5. **Default NEUTRAL** — no clear signal. Confidence kept low so this
    doesn't drown out the other agents during normal conditions.
 
-OI history limitation
-=====================
+OI history
+==========
 
-Production today: ``CryptoFlowProvider`` populates ``funding_rate`` and
-``open_interest`` but does NOT populate ``oi_change_4h`` because it has
-no per-symbol OI history buffer. As a result, the BEARISH-divergence and
-BULLISH-accumulation rules will fall through to NEUTRAL in the live
-engine until the OI-history backfill lands. The unit tests use synthetic
-``FlowOutput``s with ``oi_change_4h`` populated to exercise both paths.
-
-Once a future task plumbs OI history through ``CryptoFlowProvider`` (or
-adds an alternative provider that does), the divergence rules start
-firing automatically — no change required to this agent.
+``CryptoFlowProvider`` maintains a per-symbol rolling OI history buffer
+(``deque(maxlen=480)``) and computes ``oi_change_4h`` after a 4-hour
+warmup window. The BEARISH-divergence and BULLISH-accumulation rules
+fire automatically once the buffer is warm — no change required to this
+agent. During the cold-start warmup, ``oi_change_4h`` is ``None`` and
+these rules fall through to NEUTRAL (safe default).
 """
 
 from __future__ import annotations
