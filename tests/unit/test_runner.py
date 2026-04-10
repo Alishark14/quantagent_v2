@@ -484,7 +484,7 @@ class TestScheduledFallback:
         spawn_count = 0
         original_spawn = bot_manager.spawn_bot
 
-        async def counting_spawn(symbol):
+        async def counting_spawn(symbol, source="sentinel"):
             nonlocal spawn_count
             spawn_count += 1
             return {"status": "OK", "action": "SKIP", "bot_id": "test"}
@@ -529,7 +529,7 @@ class TestScheduledFallback:
         """Errors in spawn_bot should not crash the scheduled loop."""
         error_count = 0
 
-        async def error_spawn(symbol):
+        async def error_spawn(symbol, source="sentinel"):
             nonlocal error_count
             error_count += 1
             raise RuntimeError("spawn failed")

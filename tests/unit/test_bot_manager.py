@@ -44,7 +44,7 @@ class FakeBot:
 
 
 def _fake_factory(result: dict, raises: bool = False):
-    def factory(symbol: str, bot_id: str) -> FakeBot:
+    def factory(symbol: str, bot_id: str, adapter_override=None) -> FakeBot:
         # Stamp the bot_id onto the result so the SetupResult event
         # carries the right id (production TraderBot does the same).
         stamped = dict(result)
@@ -67,8 +67,8 @@ def _skip_action() -> TradeAction:
 
 def _make_factory(action: TradeAction | None = None, raises: bool = False):
     """Create a bot factory that builds TraderBots with mock pipeline."""
-    def factory(symbol: str, bot_id: str) -> TraderBot:
-        adapter = MockSLAdapter()
+    def factory(symbol: str, bot_id: str, adapter_override=None) -> TraderBot:
+        adapter = adapter_override or MockSLAdapter()
         pipeline = MockPipeline(action=action or _skip_action(), raises=raises)
         executor = Executor(adapter, InProcessBus(), TradingConfig(symbol=symbol))
         return TraderBot(bot_id, pipeline, executor)
@@ -107,13 +107,13 @@ class TestBotManager:
         # Use a slow factory to simulate a long-running bot
         slow_event = asyncio.Event()
 
-        def slow_factory(symbol, bot_id):
+        def slow_factory(symbol, bot_id, adapter_override=None):
             class SlowPipeline:
                 _config = TradingConfig(symbol=symbol)
                 async def run_cycle(self):
                     await slow_event.wait()
                     return _skip_action()
-            adapter = MockSLAdapter()
+            adapter = adapter_override or MockSLAdapter()
             executor = Executor(adapter, InProcessBus(), TradingConfig(symbol=symbol))
             return TraderBot(bot_id, SlowPipeline(), executor)
 
@@ -355,7 +355,7 @@ class TestBotManagerSetupResultEmission:
             return {"action": "SKIP", "conviction_score": 0.1, "order_result": None}
 
         # Patch FakeBot.run for the slow first bot only
-        def slow_factory(symbol, bot_id):
+        def slow_factory(symbol, bot_id, adapter_override=None):
             bot = FakeBot({"action": "SKIP", "order_result": None})
             bot.run = lambda: slow_run(bot)
             return bot
@@ -406,3 +406,127 @@ class TestBotManagerSetupResultEmission:
         assert len(results) == 1
         assert results[0].outcome == "TRADE"
         assert results[0].symbol == "BTC-USDC"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Scheduled vs Sentinel source isolation
+# ---------------------------------------------------------------------------
+
+
+class TestScheduledSourceSkipsSetupResult:
+    """Scheduled fallback loop must NOT emit SetupResult so it doesn't
+    consume Sentinel's cooldown or inflate the escalation threshold."""
+
+    @pytest.mark.asyncio
+    async def test_scheduled_spawn_does_not_emit_setup_result(self) -> None:
+        """source='scheduled' → no SetupResult event."""
+        bus = InProcessBus()
+        events: list[SetupResult] = []
+        bus.subscribe(SetupResult, lambda e: events.append(e))
+
+        manager = BotManager(bus, _fake_factory({
+            "status": "OK",
+            "action": "SKIP",
+            "conviction_score": 0.25,
+            "order_result": None,
+        }))
+        await manager.spawn_bot("BTC-USDC", source="scheduled")
+
+        assert len(events) == 0
+
+    @pytest.mark.asyncio
+    async def test_sentinel_spawn_still_emits_setup_result(self) -> None:
+        """source='sentinel' (default) → SetupResult emitted normally."""
+        bus = InProcessBus()
+        events: list[SetupResult] = []
+        bus.subscribe(SetupResult, lambda e: events.append(e))
+
+        manager = BotManager(bus, _fake_factory({
+            "status": "OK",
+            "action": "SKIP",
+            "conviction_score": 0.25,
+            "order_result": None,
+        }))
+        await manager.spawn_bot("BTC-USDC")  # default source="sentinel"
+
+        assert len(events) == 1
+        assert events[0].outcome == "SKIP"
+
+    @pytest.mark.asyncio
+    async def test_scheduled_trade_also_skips_setup_result(self) -> None:
+        """Even a successful TRADE from a scheduled run must not emit."""
+        bus = InProcessBus()
+        events: list[SetupResult] = []
+        bus.subscribe(SetupResult, lambda e: events.append(e))
+
+        manager = BotManager(bus, _fake_factory({
+            "status": "OK",
+            "action": "LONG",
+            "conviction_score": 0.78,
+            "order_result": {"success": True, "order_id": "x",
+                             "fill_price": 65000.0, "fill_size": 0.1, "error": None},
+        }))
+        await manager.spawn_bot("BTC-USDC", source="scheduled")
+
+        assert len(events) == 0
+
+    @pytest.mark.asyncio
+    async def test_default_source_is_sentinel(self) -> None:
+        """Omitting source defaults to 'sentinel' (backward-compatible)."""
+        bus = InProcessBus()
+        events: list[SetupResult] = []
+        bus.subscribe(SetupResult, lambda e: events.append(e))
+
+        manager = BotManager(bus, _fake_factory({
+            "status": "OK",
+            "action": "SKIP",
+            "conviction_score": 0.1,
+            "order_result": None,
+        }))
+        await manager.spawn_bot("ETH-USDC")
+
+        assert len(events) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Shared adapter override
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterOverride:
+    """Verify BotManager threads adapter overrides to the factory."""
+
+    @pytest.mark.asyncio
+    async def test_set_adapter_passed_to_factory(self) -> None:
+        """set_adapter_for_symbol → spawn_bot passes override to factory."""
+        bus = InProcessBus()
+        received_adapters: list = []
+
+        def tracking_factory(symbol, bot_id, adapter_override=None):
+            received_adapters.append(adapter_override)
+            return FakeBot({"action": "SKIP", "order_result": None, "bot_id": bot_id})
+
+        manager = BotManager(bus, tracking_factory)
+        sentinel_adapter = object()  # sentinel for identity check
+        manager.set_adapter_for_symbol("BTC-USDC", sentinel_adapter)
+
+        await manager.spawn_bot("BTC-USDC")
+
+        assert len(received_adapters) == 1
+        assert received_adapters[0] is sentinel_adapter
+
+    @pytest.mark.asyncio
+    async def test_no_override_passes_none(self) -> None:
+        """Without set_adapter_for_symbol, factory gets None."""
+        bus = InProcessBus()
+        received_adapters: list = []
+
+        def tracking_factory(symbol, bot_id, adapter_override=None):
+            received_adapters.append(adapter_override)
+            return FakeBot({"action": "SKIP", "order_result": None, "bot_id": bot_id})
+
+        manager = BotManager(bus, tracking_factory)
+        await manager.spawn_bot("BTC-USDC")
+
+        assert len(received_adapters) == 1
+        assert received_adapters[0] is None

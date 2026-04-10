@@ -578,3 +578,135 @@ async def test_orders_use_virtual_portfolio_not_data_adapter():
     # The fake should have seen ZERO order-side calls
     order_kinds = {"place_market_order", "close_position", "modify_sl", "get_balance", "get_positions"}
     assert not any(c[0] in order_kinds for c in fake.calls)
+
+
+# ---------------------------------------------------------------------------
+# SL/TP triggering via set_current_candle (shadow mode path)
+# ---------------------------------------------------------------------------
+
+
+class TestShadowModeSLTP:
+    """Verify that feeding candles to a shared sim adapter triggers SL/TP.
+
+    This is the shadow-mode path: Sentinel calls
+    ``set_current_candle(symbol, candle)`` on the adapter that the
+    pipeline opened positions on, and SL/TP orders fire.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sl_triggered_when_candle_low_breaches(self) -> None:
+        """LONG position + candle low below SL → position closed at SL."""
+        sim = _make_adapter(balance=10_000.0)
+        sim.set_current_prices({"BTC-USDC": 50_000.0})
+
+        # Open LONG
+        await sim.place_market_order("BTC-USDC", "buy", 0.1)
+        # Place SL at 49_000
+        await sim.place_sl_order("BTC-USDC", "sell", 0.1, 49_000.0)
+
+        assert len(await sim.get_positions()) == 1
+        assert len(sim.get_open_orders("BTC-USDC")) == 1
+
+        # Sentinel feeds a candle that wicks through SL
+        sim.set_current_candle("BTC-USDC", _candle(
+            ts=1700100000, o=50_000, h=50_200, low=48_500, c=49_500,
+        ))
+
+        # Position should be closed, SL order consumed
+        assert len(await sim.get_positions()) == 0
+        assert len(sim.get_open_orders("BTC-USDC")) == 0
+        # Trade history should have a stop_hit entry
+        trades = sim.get_trade_history()
+        assert len(trades) == 1
+        assert trades[0]["reason"] == "stop_hit"
+
+    @pytest.mark.asyncio
+    async def test_tp_triggered_when_candle_high_breaches(self) -> None:
+        """LONG position + candle high above TP → position closed at TP."""
+        sim = _make_adapter(balance=10_000.0)
+        sim.set_current_prices({"BTC-USDC": 50_000.0})
+
+        await sim.place_market_order("BTC-USDC", "buy", 0.1)
+        await sim.place_tp_order("BTC-USDC", "sell", 0.1, 52_000.0)
+
+        sim.set_current_candle("BTC-USDC", _candle(
+            ts=1700100000, o=50_000, h=52_500, low=49_800, c=51_500,
+        ))
+
+        assert len(await sim.get_positions()) == 0
+        trades = sim.get_trade_history()
+        assert len(trades) == 1
+        assert trades[0]["reason"] == "take_profit_hit"
+
+    @pytest.mark.asyncio
+    async def test_sl_wins_when_both_hit_same_candle(self) -> None:
+        """SL and TP both hit in same candle → SL takes priority."""
+        sim = _make_adapter(balance=10_000.0)
+        sim.set_current_prices({"BTC-USDC": 50_000.0})
+
+        await sim.place_market_order("BTC-USDC", "buy", 0.1)
+        await sim.place_sl_order("BTC-USDC", "sell", 0.1, 49_000.0)
+        await sim.place_tp_order("BTC-USDC", "sell", 0.1, 52_000.0)
+
+        # Candle with wide range that breaches BOTH levels
+        sim.set_current_candle("BTC-USDC", _candle(
+            ts=1700100000, o=50_000, h=53_000, low=48_000, c=50_500,
+        ))
+
+        assert len(await sim.get_positions()) == 0
+        trades = sim.get_trade_history()
+        assert len(trades) == 1
+        assert trades[0]["reason"] == "stop_hit"  # SL wins
+
+    @pytest.mark.asyncio
+    async def test_candle_within_range_no_trigger(self) -> None:
+        """Candle doesn't breach SL or TP → position stays open."""
+        sim = _make_adapter(balance=10_000.0)
+        sim.set_current_prices({"BTC-USDC": 50_000.0})
+
+        await sim.place_market_order("BTC-USDC", "buy", 0.1)
+        await sim.place_sl_order("BTC-USDC", "sell", 0.1, 49_000.0)
+        await sim.place_tp_order("BTC-USDC", "sell", 0.1, 52_000.0)
+
+        # Candle stays within SL/TP range
+        sim.set_current_candle("BTC-USDC", _candle(
+            ts=1700100000, o=50_000, h=51_500, low=49_200, c=50_800,
+        ))
+
+        assert len(await sim.get_positions()) == 1
+        assert len(sim.get_open_orders("BTC-USDC")) == 2  # SL + TP still pending
+        assert len(sim.get_trade_history()) == 0
+
+    @pytest.mark.asyncio
+    async def test_shared_adapter_sentinel_triggers_pipeline_sl(self) -> None:
+        """Pipeline opens position, Sentinel feeds candle → SL triggers.
+
+        This is the end-to-end shadow-mode contract: ONE adapter
+        instance is shared between the pipeline (opens positions) and
+        Sentinel (feeds candles). The SL triggers because they're on
+        the same object.
+        """
+        # ONE shared adapter
+        shared_sim = _make_adapter(balance=10_000.0)
+
+        # --- Pipeline side: open position + place SL ---
+        shared_sim.set_current_prices({"BTC-USDC": 50_000.0})
+        await shared_sim.place_market_order("BTC-USDC", "buy", 0.1)
+        await shared_sim.place_sl_order("BTC-USDC", "sell", 0.1, 49_000.0)
+        assert len(await shared_sim.get_positions()) == 1
+
+        # --- Sentinel side: feed a candle that breaches SL ---
+        shared_sim.set_current_candle("BTC-USDC", _candle(
+            ts=1700200000, o=49_500, h=49_800, low=48_500, c=48_900,
+        ))
+
+        # Position should be closed by the SL trigger
+        assert len(await shared_sim.get_positions()) == 0
+        trades = shared_sim.get_trade_history()
+        assert len(trades) == 1
+        assert trades[0]["reason"] == "stop_hit"
+
+    def test_real_adapter_has_no_set_current_candle(self) -> None:
+        """HyperliquidAdapter doesn't have set_current_candle → no-op."""
+        from exchanges.base import ExchangeAdapter
+        assert not hasattr(ExchangeAdapter, "set_current_candle")

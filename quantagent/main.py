@@ -121,7 +121,11 @@ def _make_bot_factory(
     # views the QuantDataScientist mines.
     pipeline_is_shadow = shadow_mode or paper_mode
 
-    def factory(symbol: str, bot_id: str):
+    def factory(
+        symbol: str,
+        bot_id: str,
+        adapter_override: object | None = None,
+    ):
         # Look up bot config (timeframe, exchange, user_id) from the DB
         # if it's been stored. Falls back to defaults so the factory
         # remains usable for ad-hoc / unregistered spawns.
@@ -141,7 +145,12 @@ def _make_bot_factory(
         user_id = (bot_dict or {}).get("user_id", "system")
 
         config = TradingConfig(symbol=symbol, timeframe=timeframe)
-        adapter = adapter_factory(exchange, mode=factory_mode)
+        # Use the shared adapter from Sentinel if provided, so the
+        # pipeline and Sentinel operate on the same instance. This is
+        # critical for shadow mode: Sentinel feeds candles (triggering
+        # SL/TP), while the pipeline opens positions — both must see
+        # the same SimulatedExchangeAdapter state.
+        adapter = adapter_override if adapter_override is not None else adapter_factory(exchange, mode=factory_mode)
 
         # Data layer
         fetcher = OHLCVFetcher(adapter, config)

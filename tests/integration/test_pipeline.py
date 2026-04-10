@@ -1238,3 +1238,88 @@ class TestPipelineIsShadowFlag:
         )
         assert len(with_shadow) >= 1
         assert all(c["is_shadow"] == 1 for c in with_shadow)
+
+
+# ---------------------------------------------------------------------------
+# SimulatedExchangeAdapter price-feed integration
+# ---------------------------------------------------------------------------
+
+
+class TestSimAdapterPriceFeed:
+    """Verify pipeline feeds current price to SimulatedExchangeAdapter.
+
+    Without the price feed, place_market_order() raises ValueError
+    because the sim has no current price to fill against.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pipeline_feeds_price_to_sim_adapter(self, repos) -> None:
+        """run_cycle() sets current price on sim adapter so the executor
+        can place orders without 'No current price' errors."""
+        from backtesting.sim_exchange import SimulatedExchangeAdapter
+
+        # Local data adapter that matches the full ExchangeAdapter.fetch_ohlcv
+        # signature (including `since`) so SimulatedExchangeAdapter can delegate.
+        class _SimDataAdapter(MockAdapter):
+            async def fetch_ohlcv(
+                self, symbol: str, timeframe: str,
+                limit: int = 100, since: int | None = None,
+            ) -> list[dict]:
+                return await super().fetch_ohlcv(symbol, timeframe, limit)
+
+        data_adapter = _SimDataAdapter()
+        sim = SimulatedExchangeAdapter(
+            initial_balance=10_000.0,
+            data_adapter=data_adapter,
+        )
+
+        # Wire pipeline with the sim adapter
+        config = TradingConfig(
+            symbol="BTC-USDC", timeframe="1h",
+            conviction_threshold=0.5,
+        )
+        ohlcv = OHLCVFetcher(sim, config)
+        flow_agent = FlowAgent()
+
+        registry = SignalRegistry()
+        registry.register(MockSignalProducer("indicator_agent", "BULLISH", 0.72))
+        registry.register(MockSignalProducer("pattern_agent", "BULLISH", 0.80))
+        registry.register(MockSignalProducer("trend_agent", "BULLISH", 0.65))
+
+        # LLM: high conviction → LONG decision with SL/TP
+        llm = MockLLMProvider({
+            "conviction_agent": _conviction_response(),
+            "decision_agent": _decision_response("LONG"),
+        })
+
+        conviction = ConvictionAgent(llm)
+        decision = DecisionAgent(llm, config)
+        bus = InProcessBus()
+
+        prm = PortfolioRiskManager(PortfolioRiskConfig())
+
+        pipeline = AnalysisPipeline(
+            ohlcv_fetcher=ohlcv,
+            flow_agent=flow_agent,
+            signal_registry=registry,
+            conviction_agent=conviction,
+            decision_agent=decision,
+            event_bus=bus,
+            cycle_memory=CycleMemory(repos.cycles),
+            reflection_rules=ReflectionRules(repos.rules),
+            cross_bot=CrossBotSignals(repos.cross_bot),
+            regime_history=RegimeHistory(),
+            cycle_repo=repos.cycles,
+            config=config,
+            bot_id="sim-test-bot",
+            user_id="test-user",
+            portfolio_risk_manager=prm,
+        )
+
+        # After run_cycle, the sim adapter should have a current price
+        # (fed by the pipeline's Stage 1 price-feed logic).
+        action = await pipeline.run_cycle()
+
+        # The pipeline must have fed the price before returning
+        assert "BTC-USDC" in sim._current_prices
+        assert sim._current_prices["BTC-USDC"] > 0

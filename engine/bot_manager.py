@@ -59,6 +59,21 @@ class BotManager:
         self._active: dict[str, set[str]] = {}  # symbol -> set of active bot_ids
         self._results: list[dict] = []
         self._lock = asyncio.Lock()
+        # Per-symbol adapter overrides so spawned bots share the same
+        # adapter instance as Sentinel (required for shadow-mode SL/TP
+        # triggering — Sentinel feeds candles, pipeline opens positions,
+        # both must be on the same SimulatedExchangeAdapter).
+        self._adapter_overrides: dict[str, object] = {}
+
+    def set_adapter_for_symbol(self, symbol: str, adapter: object) -> None:
+        """Register a shared adapter for a symbol.
+
+        When set, ``spawn_bot`` and event-triggered spawns pass this
+        adapter to the bot factory instead of letting the factory
+        create a new one. This ensures Sentinel and the pipeline
+        operate on the same adapter instance.
+        """
+        self._adapter_overrides[symbol] = adapter
 
     def subscribe(self) -> None:
         """Subscribe to SetupDetected events."""
@@ -95,7 +110,10 @@ class BotManager:
         """Run a TraderBot and clean up after it completes."""
         result: dict | None = None
         try:
-            bot = self._bot_factory(symbol, bot_id)
+            adapter_override = self._adapter_overrides.get(symbol)
+            bot = self._bot_factory(
+                symbol, bot_id, adapter_override=adapter_override,
+            )
             result = await bot.run()
             self._results.append(result)
 
@@ -130,11 +148,21 @@ class BotManager:
         if result is not None:
             await self._publish_setup_result(symbol, bot_id, result)
 
-    async def spawn_bot(self, symbol: str) -> dict:
+    async def spawn_bot(
+        self, symbol: str, source: str = "sentinel"
+    ) -> dict:
         """Manually spawn a bot for a symbol. Returns the result dict.
 
         Unlike event-triggered spawning, this is synchronous (waits for
         the bot to finish). Useful for scheduled cycles.
+
+        Args:
+            symbol: Trading symbol to run the pipeline for.
+            source: Who triggered the spawn. ``"sentinel"`` (default)
+                emits a ``SetupResult`` so Sentinel's escalation state
+                machine can ratchet thresholds. ``"scheduled"`` skips
+                the emission so the hourly fallback loop doesn't
+                consume Sentinel's cooldown or inflate the threshold.
         """
         bot_id = f"bot-{symbol}-{uuid4().hex[:8]}"
 
@@ -143,11 +171,6 @@ class BotManager:
                 self._active[symbol] = set()
             active_ids = self._active[symbol]
             if len(active_ids) >= self._max_concurrent:
-                # Concurrency-blocked: do NOT publish a SetupResult.
-                # The pipeline never ran, so there's no SKIP/TRADE
-                # outcome to feed back to the Sentinel — the situation
-                # is "we already have a bot for this symbol", which is
-                # orthogonal to escalation.
                 return {
                     "bot_id": bot_id,
                     "status": "SKIPPED",
@@ -158,7 +181,10 @@ class BotManager:
 
         result: dict
         try:
-            bot = self._bot_factory(symbol, bot_id)
+            adapter_override = self._adapter_overrides.get(symbol)
+            bot = self._bot_factory(
+                symbol, bot_id, adapter_override=adapter_override,
+            )
             result = await bot.run()
             self._results.append(result)
         except Exception as e:
@@ -176,8 +202,12 @@ class BotManager:
                 if not active_ids and symbol in self._active:
                     del self._active[symbol]
 
-        # Publish OUTSIDE the lock — same rationale as `_run_bot`.
-        await self._publish_setup_result(symbol, bot_id, result)
+        # Only emit SetupResult for Sentinel-triggered spawns.
+        # Scheduled fallback runs must NOT feed back into Sentinel's
+        # escalation state — otherwise every hourly SKIP ratchets the
+        # threshold and consumes cooldown, blocking real setups.
+        if source != "scheduled":
+            await self._publish_setup_result(symbol, bot_id, result)
         return result
 
     # ------------------------------------------------------------------

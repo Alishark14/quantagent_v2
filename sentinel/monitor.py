@@ -326,6 +326,18 @@ class SentinelMonitor:
             self._reset_all_escalations_for_new_candle(latest_candle_ts)
             self._last_candle_ts = latest_candle_ts
 
+        # Feed the latest candle to the adapter so SimulatedExchangeAdapter
+        # can check pending SL/TP orders against the candle's high/low.
+        # No-op on real adapters (they don't have set_current_candle).
+        if hasattr(self._adapter, "set_current_candle"):
+            try:
+                self._adapter.set_current_candle(self._symbol, candles[-1])
+            except Exception:
+                logger.debug(
+                    f"Sentinel: set_current_candle failed for {self._symbol}",
+                    exc_info=True,
+                )
+
         # Compute indicators
         indicators = compute_all_indicators(candles)
         current_price = float(candles[-1]["close"])

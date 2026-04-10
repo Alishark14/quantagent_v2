@@ -61,6 +61,7 @@ class BotRunner:
         self._scheduled_tasks: dict[str, asyncio.Task] = {}
         self._bot_configs: dict[str, dict] = {}  # bot_id -> bot dict
         self._symbol_bots: dict[str, set[str]] = {}  # symbol -> set of bot_ids
+        self._adapters: dict[str, object] = {}  # symbol -> shared adapter
         self._running = False
 
     @property
@@ -165,6 +166,7 @@ class BotRunner:
         self._scheduled_tasks.clear()
         self._bot_configs.clear()
         self._symbol_bots.clear()
+        self._adapters.clear()
 
         logger.info("BotRunner: stopped")
 
@@ -237,9 +239,15 @@ class BotRunner:
             self._symbol_bots[symbol] = set()
         self._symbol_bots[symbol].add(bot_id)
 
-        # Start sentinel for this symbol if not already running
+        # Start sentinel for this symbol if not already running.
+        # Store the adapter so spawned bots share the same instance —
+        # critical for shadow mode where Sentinel feeds candles
+        # (triggering SL/TP) and the pipeline opens positions on the
+        # same SimulatedExchangeAdapter.
         if symbol not in self._sentinels:
             adapter = self._adapter_factory(exchange, mode=mode)
+            self._adapters[symbol] = adapter
+            self._bot_manager.set_adapter_for_symbol(symbol, adapter)
             sentinel = SentinelMonitor(
                 adapter=adapter,
                 event_bus=self._bus,
@@ -343,7 +351,7 @@ class BotRunner:
 
             logger.info(f"BotRunner: scheduled trigger for {bot_id} ({symbol})")
             try:
-                await self._bot_manager.spawn_bot(symbol)
+                await self._bot_manager.spawn_bot(symbol, source="scheduled")
             except Exception:
                 logger.error(
                     f"BotRunner: scheduled spawn failed for {bot_id}",

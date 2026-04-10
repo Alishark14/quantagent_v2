@@ -204,3 +204,50 @@ def test_factory_constructs_one_prm_per_bot_not_shared():
     bot1 = factory("BTC-USDC", "bot-1")
     bot2 = factory("ETH-USDC", "bot-2")
     assert bot1._pipeline._prm is not bot2._pipeline._prm
+
+
+def test_factory_uses_adapter_override_when_provided():
+    """When adapter_override is passed, the factory uses it instead of
+    calling adapter_factory(). This is the shared-adapter contract for
+    shadow mode: Sentinel and the pipeline share one adapter."""
+    calls = {"count": 0}
+
+    def adapter_factory(_exchange, mode: str = "live"):
+        calls["count"] += 1
+        return _make_adapter_stub()
+
+    factory = _make_bot_factory(
+        repos=_make_repos_stub(),
+        llm_provider=_StubLLM(),
+        adapter_factory=adapter_factory,
+        event_bus=InProcessBus(),
+        feature_flags=FeatureFlags(),
+    )
+    override = _make_adapter_stub()
+    bot = factory("BTC-USDC", "bot-shared", adapter_override=override)
+
+    # adapter_factory was NOT called — the override was used
+    assert calls["count"] == 0
+    # The pipeline's adapter IS the override
+    assert bot._pipeline._ohlcv._adapter is override
+
+
+def test_factory_without_override_creates_new_adapter():
+    """Without adapter_override, the factory calls adapter_factory
+    normally (backward-compatible)."""
+    calls = {"count": 0}
+
+    def adapter_factory(_exchange, mode: str = "live"):
+        calls["count"] += 1
+        return _make_adapter_stub()
+
+    factory = _make_bot_factory(
+        repos=_make_repos_stub(),
+        llm_provider=_StubLLM(),
+        adapter_factory=adapter_factory,
+        event_bus=InProcessBus(),
+        feature_flags=FeatureFlags(),
+    )
+    factory("BTC-USDC", "bot-new")
+
+    assert calls["count"] == 1

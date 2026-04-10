@@ -136,6 +136,15 @@ class AnalysisPipeline:
             except Exception:
                 logger.warning(f"[{symbol}/{timeframe}] Flow data fetch failed, continuing without")
 
+            # Feed the current price to the adapter so simulated
+            # adapters (SimulatedExchangeAdapter) can price fills.
+            # No-op on real adapters — they don't have this method.
+            if market_data.candles:
+                _feed_price = float(market_data.candles[-1]["close"])
+                adapter = self._ohlcv._adapter
+                if hasattr(adapter, "set_current_prices"):
+                    adapter.set_current_prices({symbol: _feed_price})
+
             await self._bus.publish(DataReady(
                 source="pipeline",
                 market_data=market_data,
