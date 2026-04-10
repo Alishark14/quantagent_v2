@@ -15,6 +15,21 @@
 - **P3 — Low:** Future phase, no urgency
 - **Research:** Added by Research Agent, needs founder review
 
+### Symbol Resolution Layer (exchange-agnostic)
+Priority: Medium
+Depends on: HIP-3 funding fix (immediate)
+
+Formalize the HyperliquidAdapter's asset registry pattern into a reusable 
+AssetRegistry + SymbolResolver in exchanges/registry.py. Every adapter 
+builds an AssetRegistry on init from its exchange's meta endpoint. 
+AssetEntry carries: canonical symbol, exchange_symbol, asset_type, 
+tick_size, lot_size, min_notional, max_leverage, margin_mode, has_funding, 
+funding_interval, trading_hours, deployer_dex. SymbolResolver provides 
+resolve(canonical) → exchange_native for all adapter methods. Eliminates 
+per-method string manipulation and CCXT symbol format dependency for 
+critical calls. Required before adding IBKR, Alpaca, or Binance trading 
+adapters.
+
 ---
 
 ## Completed Phases

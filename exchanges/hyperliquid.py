@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 import ccxt
+import httpx
 
 from engine.types import AdapterCapabilities, OrderResult, Position
 from exchanges.base import ExchangeAdapter
@@ -74,6 +76,37 @@ _REVERSE_MAP: dict[str, str] = {v: k for k, v in SYMBOL_MAP.items()}
 
 # CCXT symbols that require dex='xyz' param
 HIP3_SYMBOLS: set[str] = {v for v in SYMBOL_MAP.values() if v.startswith("XYZ-")}
+
+# ---------------------------------------------------------------------------
+# Static coin map — derived from SYMBOL_MAP for the info API endpoints.
+# Hyperliquid's info API uses coin names like "BTC", "ETH" (native) or
+# "xyz:GOLD", "xyz:CL" (HIP-3) — NOT the CCXT format. We derive this
+# once from SYMBOL_MAP so _resolve_coin has a fast synchronous fallback
+# even before the live registry is fetched.
+# ---------------------------------------------------------------------------
+
+def _build_static_coin_map() -> dict[str, str]:
+    """Derive canonical-symbol → Hyperliquid-coin from SYMBOL_MAP."""
+    coin_map: dict[str, str] = {}
+    for internal, ccxt_sym in SYMBOL_MAP.items():
+        base_part = ccxt_sym.split("/")[0]  # "BTC" or "XYZ-GOLD"
+        if base_part.startswith("XYZ-"):
+            # HIP-3: XYZ-GOLD → xyz:GOLD, XYZ-CL → xyz:CL
+            exchange_name = base_part[4:]  # strip "XYZ-"
+            coin_map[internal] = f"xyz:{exchange_name}"
+        else:
+            # Native perp: BTC, ETH, SOL
+            coin_map[internal] = base_part
+    return coin_map
+
+_STATIC_COIN_MAP: dict[str, str] = _build_static_coin_map()
+
+# How long to cache the live asset registry (seconds).
+_REGISTRY_TTL_SECONDS = 24 * 3600  # 24 hours
+
+# Hyperliquid info API endpoints
+_MAINNET_INFO_URL = "https://api.hyperliquid.xyz/info"
+_TESTNET_INFO_URL = "https://api.hyperliquid-testnet.xyz/info"
 
 
 def _pos_size(pos: dict) -> float:
@@ -156,6 +189,13 @@ class HyperliquidAdapter(ExchangeAdapter):
             self._exchange.set_sandbox_mode(True)
             logger.info("HyperliquidAdapter: TESTNET mode active")
 
+        # Asset registry for direct info API calls (funding, OI).
+        # Populated lazily on first _resolve_coin() call.
+        self._coin_map: dict[str, str] | None = None
+        self._reverse_coin_map: dict[str, str] | None = None
+        self._registry_expires_at: float = 0.0
+        self._info_url = _TESTNET_INFO_URL if testnet else _MAINNET_INFO_URL
+
     def name(self) -> str:
         return "hyperliquid"
 
@@ -172,6 +212,114 @@ class HyperliquidAdapter(ExchangeAdapter):
             order_types=["market", "limit", "stopMarket", "takeProfit"],
             supports_partial_close=True,
         )
+
+    # ------------------------------------------------------------------
+    # Asset registry — maps canonical symbols to Hyperliquid coin names
+    # for the info API (funding rate, OI). CCXT doesn't handle HIP-3
+    # correctly for these endpoints, so we call the API directly.
+    # ------------------------------------------------------------------
+
+    async def _build_asset_registry(self) -> None:
+        """Fetch native + HIP-3 meta from Hyperliquid and build coin maps.
+
+        Native perps: POST /info {"type": "meta"} → universe[].name
+        HIP-3 perps:  POST /info {"type": "meta", "dex": "xyz"} → universe[].name
+
+        Coin names from the exchange drive the mapping — we never guess
+        from string manipulation. The maps are cached for 24h.
+        """
+        coin_map: dict[str, str] = dict(_STATIC_COIN_MAP)
+        reverse_coin_map: dict[str, str] = {}
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Fetch native perps meta
+                try:
+                    resp = await client.post(
+                        self._info_url, json={"type": "meta"}
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    for asset in data.get("universe", []):
+                        name = asset.get("name", "")
+                        if name:
+                            canonical = f"{name}-USDC"
+                            coin_map[canonical] = name
+                            reverse_coin_map[name] = canonical
+                except Exception as e:
+                    logger.warning(f"_build_asset_registry: native meta fetch failed: {e}")
+
+                # Fetch HIP-3 perps meta
+                try:
+                    resp = await client.post(
+                        self._info_url, json={"type": "meta", "dex": "xyz"}
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    for asset in data.get("universe", []):
+                        raw_name = asset.get("name", "")
+                        if not raw_name:
+                            continue
+                        # HIP-3 names come back as "xyz:GOLD", "xyz:CL", etc.
+                        # The coin name for the info API is the raw name itself.
+                        coin_name = raw_name
+                        # Strip the "xyz:" prefix for the canonical base asset
+                        if raw_name.startswith("xyz:"):
+                            base = raw_name[4:]
+                        else:
+                            base = raw_name
+                        canonical = f"{base}-USDC"
+                        coin_map[canonical] = coin_name
+                        reverse_coin_map[coin_name] = canonical
+                except Exception as e:
+                    logger.warning(f"_build_asset_registry: HIP-3 meta fetch failed: {e}")
+
+        except Exception as e:
+            logger.warning(f"_build_asset_registry: HTTP client error: {e}")
+
+        # Merge the static map back so hardcoded aliases (WTIOIL→CL)
+        # survive even if the meta endpoint doesn't return them by our
+        # canonical name. The static map entries take priority because
+        # they encode intentional renames (e.g. WTIOIL-USDC → xyz:CL).
+        for canonical, coin in _STATIC_COIN_MAP.items():
+            coin_map.setdefault(canonical, coin)
+
+        self._coin_map = coin_map
+        self._reverse_coin_map = reverse_coin_map
+        self._registry_expires_at = time.time() + _REGISTRY_TTL_SECONDS
+
+        logger.info(
+            f"_build_asset_registry: loaded {len(coin_map)} symbols "
+            f"(expires in {_REGISTRY_TTL_SECONDS}s)"
+        )
+
+    async def _resolve_coin(self, symbol: str) -> str:
+        """Translate canonical symbol (GOLD-USDC) to Hyperliquid coin name (xyz:GOLD).
+
+        Uses the live asset registry if available and fresh; falls back
+        to the static map derived from SYMBOL_MAP; last resort is the
+        bare base asset (e.g. BTC-USDC → BTC).
+        """
+        if self._coin_map is None or time.time() > self._registry_expires_at:
+            await self._build_asset_registry()
+
+        # Try the live+static merged map
+        coin = self._coin_map.get(symbol) if self._coin_map else None
+        if coin is not None:
+            return coin
+
+        # Try static map directly (defensive — should be in _coin_map)
+        coin = _STATIC_COIN_MAP.get(symbol)
+        if coin is not None:
+            return coin
+
+        # Last resort: bare base asset
+        base = symbol.split("-")[0]
+        logger.warning(
+            f"_resolve_coin: no registry entry for {symbol!r}, "
+            f"falling back to bare base {base!r}"
+        )
+        return base
 
     # ------------------------------------------------------------------
     # Symbol conversion
@@ -468,19 +616,76 @@ class HyperliquidAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     async def get_funding_rate(self, symbol: str) -> float | None:
-        ex_sym = self._to_ccxt_symbol(symbol)
+        """Fetch the latest funding rate via Hyperliquid's info API.
+
+        Uses the direct info endpoint (not CCXT) because CCXT's
+        fetchFundingRate doesn't handle HIP-3 coin names correctly.
+        """
         try:
-            rate = self._exchange.fetch_funding_rate(ex_sym)
-            return float(rate.get("fundingRate", 0))
+            coin = await self._resolve_coin(symbol)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(self._info_url, json={
+                    "type": "fundingHistory",
+                    "coin": coin,
+                    "startTime": int(time.time() * 1000) - 3_600_000,
+                })
+                resp.raise_for_status()
+                data = resp.json()
+
+            if not data:
+                logger.debug(f"get_funding_rate: no history for {symbol} (coin={coin})")
+                return None
+
+            # fundingHistory returns a list sorted by time ascending.
+            # Each entry: {"coin": "BTC", "fundingRate": "0.00005", "time": ...}
+            latest = data[-1]
+            rate_str = latest.get("fundingRate", "0")
+            return float(rate_str)
+
         except Exception as e:
             logger.warning(f"get_funding_rate failed for {symbol}: {e}")
             return None
 
     async def get_open_interest(self, symbol: str) -> float | None:
-        ex_sym = self._to_ccxt_symbol(symbol)
+        """Fetch open interest via Hyperliquid's info API.
+
+        Uses the direct info endpoint (not CCXT) because CCXT's
+        fetchOpenInterest doesn't handle HIP-3 coin names correctly.
+        The ``clearinghouseState`` endpoint returns per-asset OI for
+        native perps; for HIP-3 we query with ``dex: "xyz"``.
+        """
         try:
-            oi = self._exchange.fetch_open_interest(ex_sym)
-            return float(oi.get("openInterestAmount", 0))
+            coin = await self._resolve_coin(symbol)
+            is_hip3 = coin.startswith("xyz:")
+
+            payload: dict = {"type": "metaAndAssetCtxs"}
+            if is_hip3:
+                payload["dex"] = "xyz"
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(self._info_url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+
+            # Response: [meta, assetCtxs] where meta.universe[i] aligns
+            # with assetCtxs[i]. Find our coin and read its OI.
+            if not isinstance(data, list) or len(data) < 2:
+                return None
+
+            universe = data[0].get("universe", [])
+            ctxs = data[1]
+
+            # The coin name in the universe for HIP-3 is without the
+            # "xyz:" prefix (just "GOLD", "CL"), for native it's "BTC".
+            lookup_name = coin[4:] if is_hip3 else coin
+
+            for i, asset in enumerate(universe):
+                if asset.get("name") == lookup_name and i < len(ctxs):
+                    oi_val = ctxs[i].get("openInterest")
+                    if oi_val is not None:
+                        return float(oi_val)
+            return None
+
         except Exception as e:
             logger.warning(f"get_open_interest failed for {symbol}: {e}")
             return None

@@ -56,8 +56,21 @@ class IndicatorAgent(SignalProducer):
 
     async def analyze(self, data: MarketData) -> SignalOutput | None:
         """Build grounding header, call LLM, parse JSON response."""
+        # ── DIAGNOSTIC: log provider state on every call ──
+        logger.warning(
+            "DIAG IndicatorAgent: analyze() entered | "
+            f"llm_provider={self._llm}, type={type(self._llm).__name__}, "
+            f"candles={len(data.candles) if data.candles else 0}, "
+            f"indicators={bool(data.indicators)}, "
+            f"flags_enabled={self.is_enabled()}"
+        )
+
         if not data.candles or not data.indicators:
-            logger.warning("IndicatorAgent: no candles or indicators, returning None")
+            logger.warning(
+                "DIAG IndicatorAgent: returning None at L59 — "
+                f"candles={'empty' if not data.candles else len(data.candles)}, "
+                f"indicators={'empty/falsy' if not data.indicators else 'truthy'}"
+            )
             return None
 
         try:
@@ -83,6 +96,12 @@ class IndicatorAgent(SignalProducer):
                 timeframe=data.timeframe,
             )
 
+            # ── DIAGNOSTIC: confirm we reach the LLM call ──
+            logger.warning(
+                "DIAG IndicatorAgent: about to call self._llm.generate_text() | "
+                f"system_len={len(system)}, user_len={len(user)}"
+            )
+
             response = await self._llm.generate_text(
                 system_prompt=system,
                 user_prompt=user,
@@ -92,9 +111,23 @@ class IndicatorAgent(SignalProducer):
                 cache_system_prompt=True,
             )
 
-            return self._parse_response(response.content)
+            # ── DIAGNOSTIC: LLM returned ──
+            logger.warning(
+                f"DIAG IndicatorAgent: LLM returned | content_len={len(response.content)}"
+            )
 
-        except Exception:
+            result = self._parse_response(response.content)
+            if result is None:
+                logger.warning(
+                    "DIAG IndicatorAgent: returning None at L96 — _parse_response returned None"
+                )
+            return result
+
+        except Exception as exc:
+            logger.warning(
+                f"DIAG IndicatorAgent: returning None at L99 — "
+                f"exception: {type(exc).__name__}: {exc}"
+            )
             logger.exception("IndicatorAgent: analysis failed")
             return None
 
@@ -107,14 +140,20 @@ class IndicatorAgent(SignalProducer):
         try:
             json_str = self._extract_json(raw)
             if json_str is None:
-                logger.warning("IndicatorAgent: could not extract JSON from response")
+                logger.warning(
+                    "DIAG IndicatorAgent: returning None at L110 — "
+                    f"could not extract JSON from response: {raw[:200]!r}"
+                )
                 return None
 
             parsed = json.loads(json_str)
 
             direction = parsed.get("direction")
             if direction not in ("BULLISH", "BEARISH", "NEUTRAL"):
-                logger.warning(f"IndicatorAgent: invalid direction '{direction}'")
+                logger.warning(
+                    f"DIAG IndicatorAgent: returning None at L118 — "
+                    f"invalid direction '{direction}'"
+                )
                 return None
 
             confidence = float(parsed.get("confidence", 0))
@@ -141,7 +180,11 @@ class IndicatorAgent(SignalProducer):
                 raw_output=raw,
             )
 
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                f"DIAG IndicatorAgent: returning None at L148 — "
+                f"parse exception: {type(exc).__name__}: {exc}"
+            )
             logger.exception("IndicatorAgent: parse failed")
             return None
 

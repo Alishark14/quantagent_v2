@@ -57,8 +57,21 @@ class PatternAgent(SignalProducer):
 
     async def analyze(self, data: MarketData) -> SignalOutput | None:
         """Generate candlestick chart, call Vision LLM, parse response."""
+        # ── DIAGNOSTIC: log provider state on every call ──
+        logger.warning(
+            "DIAG PatternAgent: analyze() entered | "
+            f"llm_provider={self._llm}, type={type(self._llm).__name__}, "
+            f"candles={len(data.candles) if data.candles else 0}, "
+            f"indicators={bool(data.indicators)}, "
+            f"flags_enabled={self.is_enabled()}"
+        )
+
         if not data.candles or not data.indicators:
-            logger.warning("PatternAgent: no candles or indicators, returning None")
+            logger.warning(
+                "DIAG PatternAgent: returning None at L60 — "
+                f"candles={'empty' if not data.candles else len(data.candles)}, "
+                f"indicators={'empty/falsy' if not data.indicators else 'truthy'}"
+            )
             return None
 
         try:
@@ -71,8 +84,16 @@ class PatternAgent(SignalProducer):
                 swing_lows=data.swing_lows,
             )
             if not chart_png:
-                logger.warning("PatternAgent: chart generation returned empty bytes")
+                logger.warning(
+                    "DIAG PatternAgent: returning None at L73 — "
+                    "chart generation returned empty bytes"
+                )
                 return None
+
+            logger.warning(
+                f"DIAG PatternAgent: chart generated OK | "
+                f"png_bytes={len(chart_png)}"
+            )
 
             # Build grounding header
             grounding = generate_grounding_header(
@@ -97,6 +118,13 @@ class PatternAgent(SignalProducer):
                 forecast_description=data.forecast_description,
             )
 
+            # ── DIAGNOSTIC: confirm we reach the LLM call ──
+            logger.warning(
+                "DIAG PatternAgent: about to call self._llm.generate_vision() | "
+                f"system_len={len(system)}, user_len={len(user)}, "
+                f"image_bytes={len(chart_png)}"
+            )
+
             response = await self._llm.generate_vision(
                 system_prompt=system,
                 user_prompt=user,
@@ -108,9 +136,23 @@ class PatternAgent(SignalProducer):
                 cache_system_prompt=True,
             )
 
-            return self._parse_response(response.content)
+            # ── DIAGNOSTIC: LLM returned ──
+            logger.warning(
+                f"DIAG PatternAgent: LLM returned | content_len={len(response.content)}"
+            )
 
-        except Exception:
+            result = self._parse_response(response.content)
+            if result is None:
+                logger.warning(
+                    "DIAG PatternAgent: returning None at L111 — _parse_response returned None"
+                )
+            return result
+
+        except Exception as exc:
+            logger.warning(
+                f"DIAG PatternAgent: returning None at L114 — "
+                f"exception: {type(exc).__name__}: {exc}"
+            )
             logger.exception("PatternAgent: analysis failed")
             return None
 
@@ -124,14 +166,20 @@ class PatternAgent(SignalProducer):
         try:
             json_str = _extract_json(raw)
             if json_str is None:
-                logger.warning("PatternAgent: could not extract JSON from response")
+                logger.warning(
+                    "DIAG PatternAgent: returning None at L126 — "
+                    f"could not extract JSON from response: {raw[:200]!r}"
+                )
                 return None
 
             parsed = json.loads(json_str)
 
             direction = parsed.get("direction")
             if direction not in ("BULLISH", "BEARISH", "NEUTRAL"):
-                logger.warning(f"PatternAgent: invalid direction '{direction}'")
+                logger.warning(
+                    f"DIAG PatternAgent: returning None at L134 — "
+                    f"invalid direction '{direction}'"
+                )
                 return None
 
             confidence = float(parsed.get("confidence", 0))
@@ -162,7 +210,11 @@ class PatternAgent(SignalProducer):
                 raw_output=raw,
             )
 
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                f"DIAG PatternAgent: returning None at L167 — "
+                f"parse exception: {type(exc).__name__}: {exc}"
+            )
             logger.exception("PatternAgent: parse failed")
             return None
 

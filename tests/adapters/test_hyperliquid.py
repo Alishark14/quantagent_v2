@@ -1,9 +1,11 @@
-"""Tests for HyperliquidAdapter — all CCXT calls mocked."""
+"""Tests for HyperliquidAdapter — all CCXT and HTTP calls mocked."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from engine.types import AdapterCapabilities, OrderResult, Position
@@ -11,6 +13,8 @@ from exchanges.hyperliquid import (
     HIP3_SYMBOLS,
     SYMBOL_MAP,
     HyperliquidAdapter,
+    _STATIC_COIN_MAP,
+    _build_static_coin_map,
     _pos_size,
     _REVERSE_MAP,
 )
@@ -299,29 +303,356 @@ class TestPosSize:
 # ---------------------------------------------------------------------------
 
 
-class TestFlowData:
+# ---------------------------------------------------------------------------
+# Static coin map
+# ---------------------------------------------------------------------------
+
+
+class TestStaticCoinMap:
+    def test_native_perp_maps_to_bare_name(self) -> None:
+        assert _STATIC_COIN_MAP["BTC-USDC"] == "BTC"
+        assert _STATIC_COIN_MAP["ETH-USDC"] == "ETH"
+        assert _STATIC_COIN_MAP["SOL-USDC"] == "SOL"
+
+    def test_hip3_maps_to_xyz_prefixed_name(self) -> None:
+        assert _STATIC_COIN_MAP["GOLD-USDC"] == "xyz:GOLD"
+        assert _STATIC_COIN_MAP["TSLA-USDC"] == "xyz:TSLA"
+        assert _STATIC_COIN_MAP["SP500-USDC"] == "xyz:SP500"
+
+    def test_wtioil_maps_to_cl(self) -> None:
+        """WTIOIL→CL is the canonical non-obvious mapping."""
+        assert _STATIC_COIN_MAP["WTIOIL-USDC"] == "xyz:CL"
+
+    def test_all_symbol_map_entries_have_coin(self) -> None:
+        for sym in SYMBOL_MAP:
+            assert sym in _STATIC_COIN_MAP, f"Missing coin map entry for {sym}"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for mocking httpx responses
+# ---------------------------------------------------------------------------
+
+
+def _mock_response(json_data, status_code: int = 200) -> httpx.Response:
+    """Build a mock httpx.Response with .json() and .raise_for_status()."""
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    resp.json.return_value = json_data
+    resp.raise_for_status.return_value = None
+    if status_code >= 400:
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=MagicMock(), response=resp,
+        )
+    return resp
+
+
+# Sample meta responses for tests
+_NATIVE_META = {
+    "universe": [
+        {"name": "BTC", "szDecimals": 5},
+        {"name": "ETH", "szDecimals": 4},
+    ]
+}
+
+_HIP3_META = {
+    "universe": [
+        {"name": "xyz:GOLD", "szDecimals": 2},
+        {"name": "xyz:CL", "szDecimals": 3},
+    ]
+}
+
+
+# ---------------------------------------------------------------------------
+# Asset registry + coin resolver
+# ---------------------------------------------------------------------------
+
+
+class TestAssetRegistry:
     @pytest.mark.asyncio
-    async def test_get_funding_rate(self, adapter: HyperliquidAdapter) -> None:
-        adapter._exchange.fetch_funding_rate.return_value = {"fundingRate": 0.0001}
-        rate = await adapter.get_funding_rate("BTC-USDC")
-        assert rate == 0.0001
+    async def test_build_registry_from_meta(self, adapter: HyperliquidAdapter) -> None:
+        """Registry merges native + HIP-3 meta into _coin_map."""
+        async def _mock_post(url, json=None):
+            if json.get("dex") == "xyz":
+                return _mock_response(_HIP3_META)
+            return _mock_response(_NATIVE_META)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            await adapter._build_asset_registry()
+
+        assert adapter._coin_map is not None
+        # Native perps from meta
+        assert adapter._coin_map["BTC-USDC"] == "BTC"
+        assert adapter._coin_map["ETH-USDC"] == "ETH"
+        # HIP-3 from meta — base is stripped from "xyz:GOLD" → canonical "GOLD-USDC"
+        assert adapter._coin_map["GOLD-USDC"] == "xyz:GOLD"
+        assert adapter._coin_map["CL-USDC"] == "xyz:CL"
+        # Static map entries survive for aliases
+        assert adapter._coin_map["WTIOIL-USDC"] == "xyz:CL"
 
     @pytest.mark.asyncio
-    async def test_get_funding_rate_failure(self, adapter: HyperliquidAdapter) -> None:
-        adapter._exchange.fetch_funding_rate.side_effect = Exception("fail")
-        rate = await adapter.get_funding_rate("BTC-USDC")
+    async def test_registry_caches_for_24h(self, adapter: HyperliquidAdapter) -> None:
+        """Once built, the registry isn't rebuilt within the TTL window."""
+        adapter._coin_map = {"BTC-USDC": "BTC"}
+        adapter._registry_expires_at = time.time() + 86400  # future
+
+        coin = await adapter._resolve_coin("BTC-USDC")
+        assert coin == "BTC"
+        # _build_asset_registry should NOT have been called (no HTTP)
+
+    @pytest.mark.asyncio
+    async def test_registry_rebuilds_after_expiry(self, adapter: HyperliquidAdapter) -> None:
+        """Expired registry triggers a rebuild."""
+        adapter._coin_map = {"BTC-USDC": "BTC"}
+        adapter._registry_expires_at = time.time() - 1  # expired
+
+        async def _mock_post(url, json=None):
+            if json.get("dex") == "xyz":
+                return _mock_response(_HIP3_META)
+            return _mock_response(_NATIVE_META)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            coin = await adapter._resolve_coin("BTC-USDC")
+
+        assert coin == "BTC"
+        assert adapter._registry_expires_at > time.time()
+
+    @pytest.mark.asyncio
+    async def test_registry_meta_failure_falls_back_to_static(self, adapter: HyperliquidAdapter) -> None:
+        """If the meta endpoint fails, the static map still works."""
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("offline"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            await adapter._build_asset_registry()
+
+        # Static map entries should still be present
+        assert adapter._coin_map["BTC-USDC"] == "BTC"
+        assert adapter._coin_map["GOLD-USDC"] == "xyz:GOLD"
+
+
+class TestResolveCoin:
+    @pytest.mark.asyncio
+    async def test_resolve_native_perp(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+        assert await adapter._resolve_coin("BTC-USDC") == "BTC"
+
+    @pytest.mark.asyncio
+    async def test_resolve_hip3_gold(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+        assert await adapter._resolve_coin("GOLD-USDC") == "xyz:GOLD"
+
+    @pytest.mark.asyncio
+    async def test_resolve_wtioil_to_cl(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+        assert await adapter._resolve_coin("WTIOIL-USDC") == "xyz:CL"
+
+    @pytest.mark.asyncio
+    async def test_resolve_unknown_falls_back_to_base(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = {"BTC-USDC": "BTC"}
+        adapter._registry_expires_at = time.time() + 86400
+        coin = await adapter._resolve_coin("NEWCOIN-USDC")
+        assert coin == "NEWCOIN"
+
+
+# ---------------------------------------------------------------------------
+# Funding rate (direct API)
+# ---------------------------------------------------------------------------
+
+
+class TestFundingRate:
+    @pytest.mark.asyncio
+    async def test_get_funding_rate_native(self, adapter: HyperliquidAdapter) -> None:
+        """Native perp funding rate fetched with bare coin name."""
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        funding_data = [
+            {"coin": "BTC", "fundingRate": "0.00005", "time": 1700000000},
+            {"coin": "BTC", "fundingRate": "0.00012", "time": 1700003600},
+        ]
+
+        async def _mock_post(url, json=None):
+            return _mock_response(funding_data)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            rate = await adapter.get_funding_rate("BTC-USDC")
+
+        assert rate == 0.00012  # latest entry
+
+    @pytest.mark.asyncio
+    async def test_get_funding_rate_hip3_gold(self, adapter: HyperliquidAdapter) -> None:
+        """HIP-3 funding rate uses xyz:GOLD as the coin name."""
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        funding_data = [
+            {"coin": "xyz:GOLD", "fundingRate": "-0.0003", "time": 1700000000},
+        ]
+        captured_payloads: list[dict] = []
+
+        async def _mock_post(url, json=None):
+            captured_payloads.append(json)
+            return _mock_response(funding_data)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            rate = await adapter.get_funding_rate("GOLD-USDC")
+
+        assert rate == -0.0003
+        # Verify the API was called with the correct coin name
+        assert any(p.get("coin") == "xyz:GOLD" for p in captured_payloads)
+
+    @pytest.mark.asyncio
+    async def test_get_funding_rate_empty_response(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        async def _mock_post(url, json=None):
+            return _mock_response([])
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            rate = await adapter.get_funding_rate("BTC-USDC")
+
         assert rate is None
 
     @pytest.mark.asyncio
-    async def test_get_open_interest(self, adapter: HyperliquidAdapter) -> None:
-        adapter._exchange.fetch_open_interest.return_value = {"openInterestAmount": 5000000}
-        oi = await adapter.get_open_interest("BTC-USDC")
-        assert oi == 5000000
+    async def test_get_funding_rate_http_failure(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("offline"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            rate = await adapter.get_funding_rate("BTC-USDC")
+
+        assert rate is None
+
+
+# ---------------------------------------------------------------------------
+# Open interest (direct API)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenInterest:
+    @pytest.mark.asyncio
+    async def test_get_oi_native(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        meta_ctx = [
+            {"universe": [{"name": "BTC"}, {"name": "ETH"}]},
+            [{"openInterest": "5000000.5"}, {"openInterest": "2000000"}],
+        ]
+
+        async def _mock_post(url, json=None):
+            return _mock_response(meta_ctx)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            oi = await adapter.get_open_interest("BTC-USDC")
+
+        assert oi == 5000000.5
 
     @pytest.mark.asyncio
-    async def test_get_open_interest_failure(self, adapter: HyperliquidAdapter) -> None:
-        adapter._exchange.fetch_open_interest.side_effect = Exception("fail")
-        oi = await adapter.get_open_interest("BTC-USDC")
+    async def test_get_oi_hip3(self, adapter: HyperliquidAdapter) -> None:
+        """HIP-3 OI query sends dex=xyz and looks up by stripped name."""
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        meta_ctx = [
+            {"universe": [{"name": "GOLD"}, {"name": "CL"}]},
+            [{"openInterest": "1234"}, {"openInterest": "5678"}],
+        ]
+        captured_payloads: list[dict] = []
+
+        async def _mock_post(url, json=None):
+            captured_payloads.append(json)
+            return _mock_response(meta_ctx)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            oi = await adapter.get_open_interest("GOLD-USDC")
+
+        assert oi == 1234.0
+        # Verify the payload had dex=xyz for HIP-3
+        assert any(p.get("dex") == "xyz" for p in captured_payloads)
+
+    @pytest.mark.asyncio
+    async def test_get_oi_coin_not_in_response(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        meta_ctx = [
+            {"universe": [{"name": "ETH"}]},
+            [{"openInterest": "2000000"}],
+        ]
+
+        async def _mock_post(url, json=None):
+            return _mock_response(meta_ctx)
+
+        mock_client = AsyncMock()
+        mock_client.post = _mock_post
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            oi = await adapter.get_open_interest("BTC-USDC")
+
+        assert oi is None
+
+    @pytest.mark.asyncio
+    async def test_get_oi_http_failure(self, adapter: HyperliquidAdapter) -> None:
+        adapter._coin_map = dict(_STATIC_COIN_MAP)
+        adapter._registry_expires_at = time.time() + 86400
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("offline"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("exchanges.hyperliquid.httpx.AsyncClient", return_value=mock_client):
+            oi = await adapter.get_open_interest("BTC-USDC")
+
         assert oi is None
 
 
