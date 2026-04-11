@@ -121,6 +121,28 @@ def _make_bot_factory(
     # views the QuantDataScientist mines.
     pipeline_is_shadow = shadow_mode or paper_mode
 
+    # Single CryptoFlowProvider shared across every spawned bot. Its
+    # rolling OI history buffer is keyed per-symbol internally, so one
+    # instance correctly accumulates lookback windows for every symbol
+    # the factory ever sees. Building a fresh provider inside
+    # ``factory(...)`` would wipe the buffer on every hourly spawn —
+    # the cold-start path would never end and FlowSignalAgent's
+    # BUILDING / DROPPING rules would stay dormant.
+    #
+    # The provider is wired to ``repos.oi_snapshots`` so each fresh
+    # snapshot is also persisted, and ``warmup_from_repo()`` (awaited
+    # by the caller after construction) bulk-loads the recent window
+    # so a process restart is effectively free after the first day of
+    # uptime. ``getattr`` keeps the test stubs happy — MagicMock
+    # repos and the SQLite fallback both supply the attribute.
+    _oi_repo = getattr(repos, "oi_snapshots", None)
+    _shared_flow_provider = CryptoFlowProvider(oi_repo=_oi_repo)
+    # Default to a 1h-bot lookback (2h window). The shared provider
+    # serves every spawned bot regardless of timeframe; if mixed
+    # timeframes ship in the future the provider will need per-symbol
+    # lookbacks. For now all production bots are 1h.
+    _shared_flow_provider.set_lookback_for_timeframe("1h")
+
     def factory(
         symbol: str,
         bot_id: str,
@@ -154,7 +176,7 @@ def _make_bot_factory(
 
         # Data layer
         fetcher = OHLCVFetcher(adapter, config)
-        flow_agent = FlowAgent([CryptoFlowProvider()])
+        flow_agent = FlowAgent([_shared_flow_provider])
 
         # Signal layer — register every enabled agent. The four
         # currently-shipped agents are gated by their feature flags so
@@ -214,6 +236,20 @@ def _make_bot_factory(
             user_id=user_id,
             is_shadow=pipeline_is_shadow,
             portfolio_risk_manager=portfolio_risk_manager,
+            # Pure shadow mode (sim adapter, fake money) bypasses PRM
+            # and uses a fixed $500 size so the data moat collects every
+            # signal — exposure caps would otherwise starve the dataset
+            # because shadow positions accumulate until the Sentinel
+            # SL/TP monitor closes them. Paper mode (testnet) keeps PRM
+            # active because validating live PRM is the whole point.
+            shadow_fixed_size_usd=500.0 if shadow_mode else None,
+            # Trade repo is wired in shadow mode so freshly opened
+            # shadow positions get persisted to the trades table — the
+            # Sentinel's SL/TP monitor reads from the same table to
+            # close them when price breaches a level. Live + paper
+            # don't need this path because their SL/TP orders live on
+            # the exchange.
+            trade_repo=repos.trades if shadow_mode else None,
         )
 
         return TraderBot(
@@ -223,6 +259,12 @@ def _make_bot_factory(
             position_manager=position_manager,
         )
 
+    # Stash the shared CryptoFlowProvider on the factory function so
+    # the async startup path (`_run_server`) can `await
+    # bot_factory.flow_provider.warmup_from_repo()` and launch the
+    # hourly cleanup loop without having to thread either the provider
+    # or the repo through the BotRunner.
+    factory.flow_provider = _shared_flow_provider  # type: ignore[attr-defined]
     return factory
 
 
@@ -315,6 +357,39 @@ async def _run_server() -> None:
         paper_mode=paper_mode,
     )
 
+    # ── Warm the shared CryptoFlowProvider from the OI snapshot table
+    # before any bot spawns. After this awaits the deques already hold
+    # whatever the last process run wrote, so the very first analysis
+    # cycle can compute oi_change_4h / oi_trend instead of blocking on
+    # the cold-start window. Errors here are non-fatal — the provider
+    # falls back to live cold start if the bulk-load fails.
+    try:
+        warmed = await bot_factory.flow_provider.warmup_from_repo()
+        logger.info(
+            f"CryptoFlowProvider warmup loaded {warmed} snapshots "
+            f"({bot_factory.flow_provider.lookback_seconds}s lookback)"
+        )
+    except Exception:
+        logger.exception("CryptoFlowProvider warmup failed; continuing")
+
+    # ── Hourly cleanup loop for the oi_snapshots table.
+    # Keeps the table small by deleting anything older than 24h. Runs
+    # in the background; cancelled on shutdown via shutdown_event.
+    async def _oi_snapshots_cleanup_loop():
+        while not shutdown_event.is_set():
+            try:
+                deleted = await repos.oi_snapshots.cleanup_older_than(86_400)
+                if deleted:
+                    logger.info(
+                        f"oi_snapshots cleanup: deleted {deleted} rows older than 24h"
+                    )
+            except Exception:
+                logger.exception("oi_snapshots cleanup failed")
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=3600)
+            except asyncio.TimeoutError:
+                continue
+
     bot_manager = BotManager(
         event_bus=event_bus,
         bot_factory=bot_factory,
@@ -356,6 +431,10 @@ async def _run_server() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    # Launch the OI snapshot cleanup loop now that shutdown_event
+    # exists. The loop closes itself when the event is set.
+    cleanup_task = asyncio.create_task(_oi_snapshots_cleanup_loop())
+
     # ── Start uvicorn ──
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8000"))
@@ -379,6 +458,11 @@ async def _run_server() -> None:
 
     # ── Graceful shutdown ──
     logger.info("Graceful shutdown initiated...")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except (asyncio.CancelledError, Exception):
+        pass
     await runner.stop()
     server.should_exit = True
     await server_task

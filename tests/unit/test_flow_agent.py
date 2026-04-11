@@ -510,3 +510,200 @@ class TestFlowAgent:
         assert result.nearest_liquidation_below is None
         assert result.gex_regime is None
         assert result.gex_flip_level is None
+
+
+# ---------------------------------------------------------------------------
+# Configurable lookback + persistence
+# ---------------------------------------------------------------------------
+
+
+class _FakeOIRepo:
+    """In-memory stand-in for OISnapshotRepository."""
+
+    def __init__(self, preload: list[dict] | None = None) -> None:
+        self.snapshots: list[tuple[str, float, float]] = []
+        if preload:
+            for row in preload:
+                self.snapshots.append(
+                    (row["symbol"], float(row["timestamp"]), float(row["oi_value"]))
+                )
+
+    async def insert_snapshot(self, symbol, timestamp, oi_value):
+        # Coerce datetime → epoch like the real repo would store
+        if hasattr(timestamp, "timestamp"):
+            ts_epoch = timestamp.timestamp()
+        else:
+            ts_epoch = float(timestamp)
+        self.snapshots.append((symbol, ts_epoch, float(oi_value)))
+
+    async def get_recent_snapshots(self, lookback_seconds):
+        cutoff = time.time() - float(lookback_seconds)
+        rows = [
+            {"symbol": s, "timestamp": ts, "oi_value": oi}
+            for (s, ts, oi) in self.snapshots
+            if ts > cutoff
+        ]
+        rows.sort(key=lambda r: (r["symbol"], r["timestamp"]))
+        return rows
+
+    async def cleanup_older_than(self, seconds):
+        cutoff = time.time() - float(seconds)
+        before = len(self.snapshots)
+        self.snapshots = [s for s in self.snapshots if s[1] >= cutoff]
+        return before - len(self.snapshots)
+
+
+class TestCryptoFlowProviderLookback:
+    """Configurable lookback (Change 7)."""
+
+    def test_default_lookback_is_two_hours(self) -> None:
+        provider = CryptoFlowProvider()
+        assert provider.lookback_seconds == 7_200
+        assert provider._buffer_maxlen == 240
+
+    def test_explicit_lookback_in_constructor(self) -> None:
+        provider = CryptoFlowProvider(lookback_seconds=3_600)
+        assert provider.lookback_seconds == 3_600
+        assert provider._buffer_maxlen == 120
+
+    def test_set_lookback_for_known_timeframes(self) -> None:
+        provider = CryptoFlowProvider()
+        for tf, expected in [
+            ("15m", 1_800),
+            ("30m", 3_600),
+            ("1h", 7_200),
+            ("4h", 28_800),
+            ("1d", 172_800),
+        ]:
+            provider.set_lookback_for_timeframe(tf)
+            assert provider.lookback_seconds == expected
+            assert provider._buffer_maxlen == max(60, expected // 30)
+
+    def test_set_lookback_for_unknown_timeframe_falls_back(self) -> None:
+        provider = CryptoFlowProvider()
+        provider.set_lookback_for_timeframe("7m")  # not in the map
+        assert provider.lookback_seconds == 7_200  # default
+
+    def test_set_lookback_resets_history(self) -> None:
+        """Changing the lookback wipes existing deques (their maxlen
+        is now wrong) so they refill cleanly from the next fetch."""
+        provider = CryptoFlowProvider()
+        provider._oi_history["BTC-USDC"] = deque(maxlen=480)
+        provider._oi_history["BTC-USDC"].append((time.time(), 1.0))
+        provider._oi_warm_logged.add("BTC-USDC")
+
+        provider.set_lookback_for_timeframe("30m")
+
+        assert "BTC-USDC" not in provider._oi_history
+        assert "BTC-USDC" not in provider._oi_warm_logged
+
+    @pytest.mark.asyncio
+    async def test_compute_uses_configured_lookback(self) -> None:
+        """A provider with a 30-minute lookback computes deltas off the
+        30-minute window, not the 4-hour window."""
+        provider = CryptoFlowProvider(lookback_seconds=1_800)
+        now = time.time()
+        # Inject one entry just outside the 30-minute window and one
+        # just inside it.
+        provider._oi_history["BTC-USDC"] = deque(maxlen=120)
+        provider._oi_history["BTC-USDC"].append((now - 1_900, 1_000_000.0))
+        provider._oi_history["BTC-USDC"].append((now - 1_750, 1_000_000.0))
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=1_050_000.0)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data["oi_change_4h"] is not None
+        assert abs(data["oi_change_4h"] - 0.05) < 1e-9
+        assert data["oi_trend"] == "BUILDING"
+
+
+class TestCryptoFlowProviderPersistence:
+    """Repository wiring (Change 6)."""
+
+    @pytest.mark.asyncio
+    async def test_warmup_loads_recent_snapshots_into_deques(self) -> None:
+        now = time.time()
+        repo = _FakeOIRepo(preload=[
+            {"symbol": "BTC-USDC", "timestamp": now - 1_500, "oi_value": 1_000_000.0},
+            {"symbol": "BTC-USDC", "timestamp": now - 1_400, "oi_value": 1_010_000.0},
+            {"symbol": "ETH-USDC", "timestamp": now - 1_400, "oi_value": 500_000.0},
+        ])
+        provider = CryptoFlowProvider(lookback_seconds=1_800, oi_repo=repo)
+
+        loaded = await provider.warmup_from_repo()
+        assert loaded == 3
+        assert len(provider._oi_history["BTC-USDC"]) == 2
+        assert len(provider._oi_history["ETH-USDC"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_warmup_no_repo_is_no_op(self) -> None:
+        provider = CryptoFlowProvider()
+        assert await provider.warmup_from_repo() == 0
+
+    @pytest.mark.asyncio
+    async def test_warmup_swallows_repo_errors(self) -> None:
+        class _BoomRepo:
+            async def get_recent_snapshots(self, lookback_seconds):
+                raise RuntimeError("DB blew up")
+
+            async def insert_snapshot(self, *a, **k):
+                pass
+
+            async def cleanup_older_than(self, *a, **k):
+                return 0
+
+        provider = CryptoFlowProvider(oi_repo=_BoomRepo())
+        # Must NOT raise — provider falls back to cold start
+        assert await provider.warmup_from_repo() == 0
+        assert provider._oi_history == {}
+
+    @pytest.mark.asyncio
+    async def test_fetch_persists_snapshot_to_repo(self) -> None:
+        repo = _FakeOIRepo()
+        provider = CryptoFlowProvider(oi_repo=repo)
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=1_000_000.0)
+
+        await provider.fetch("BTC-USDC", adapter)
+        await provider.fetch("BTC-USDC", adapter)
+
+        assert len(repo.snapshots) == 2
+        assert repo.snapshots[0][0] == "BTC-USDC"
+        assert repo.snapshots[0][2] == 1_000_000.0
+
+    @pytest.mark.asyncio
+    async def test_fetch_repo_failure_does_not_break_data_layer(self) -> None:
+        class _InsertBoomRepo:
+            async def get_recent_snapshots(self, lookback_seconds):
+                return []
+
+            async def insert_snapshot(self, *a, **k):
+                raise ConnectionError("DB unreachable")
+
+            async def cleanup_older_than(self, *a, **k):
+                return 0
+
+        provider = CryptoFlowProvider(oi_repo=_InsertBoomRepo())
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=1_000_000.0)
+        # Must not raise — DB blip cannot take down the data layer
+        data = await provider.fetch("BTC-USDC", adapter)
+        assert data["open_interest"] == 1_000_000.0
+
+    @pytest.mark.asyncio
+    async def test_warmup_then_fetch_yields_immediate_delta(self) -> None:
+        """The whole point of persistence: a fresh process can compute
+        deltas on its very first fetch instead of waiting for warmup."""
+        now = time.time()
+        repo = _FakeOIRepo(preload=[
+            # One entry just before the lookback window, one just inside
+            {"symbol": "BTC-USDC", "timestamp": now - 1_900, "oi_value": 1_000_000.0},
+            {"symbol": "BTC-USDC", "timestamp": now - 1_750, "oi_value": 1_000_000.0},
+        ])
+        provider = CryptoFlowProvider(lookback_seconds=1_800, oi_repo=repo)
+        await provider.warmup_from_repo()
+
+        adapter = MockFlowAdapter(funding_rate=0.001, open_interest=1_050_000.0)
+        data = await provider.fetch("BTC-USDC", adapter)
+
+        assert data["oi_change_4h"] is not None
+        assert data["oi_change_4h"] > 0.02
+        assert data["oi_trend"] == "BUILDING"

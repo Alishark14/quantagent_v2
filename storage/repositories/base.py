@@ -67,6 +67,83 @@ class TradeRepository(ABC):
         """Update trade fields. Returns True if trade was found and updated."""
         ...
 
+    @abstractmethod
+    async def get_open_shadow_trades(self, symbol: str) -> list[dict]:
+        """Return all open shadow trades for ``symbol``.
+
+        Used by the Sentinel SL/TP monitor to find positions that need
+        their high/low watched on each scan. Filters by
+        ``status='open' AND is_shadow=true AND symbol=?``. The
+        complementary live-trade scan is owned by the exchange (native
+        SL/TP orders), so this method intentionally returns shadow rows
+        only — there is no live equivalent.
+        """
+        ...
+
+    @abstractmethod
+    async def close_trade(
+        self,
+        trade_id: str,
+        *,
+        exit_price: float,
+        exit_reason: str,
+        exit_time,
+        pnl: float,
+    ) -> bool:
+        """Close an open trade with exit details + computed PnL.
+
+        Sets ``status='closed'`` and stamps the four exit fields. The
+        caller computes PnL because the formula depends on direction
+        (long vs short) and the repo doesn't fetch the row first to
+        avoid an extra round-trip.
+        """
+        ...
+
+
+class OISnapshotRepository(ABC):
+    """Repository for the rolling per-symbol open-interest history.
+
+    The CryptoFlowProvider keeps an in-memory deque of recent OI
+    snapshots per symbol so it can compute ``oi_change_*`` deltas
+    locally. The deque resets on every process restart, which means
+    every fresh boot pays a multi-hour cold-start penalty before
+    FlowSignalAgent's BUILDING / DROPPING / divergence rules can fire.
+    Persisting snapshots to a small dedicated table eliminates that
+    penalty: on startup the provider bulk-loads the recent window from
+    the table into its deques, and on every fetch it writes the new
+    snapshot back. A periodic cleanup keeps the table small.
+    """
+
+    @abstractmethod
+    async def insert_snapshot(
+        self, symbol: str, timestamp, oi_value: float
+    ) -> None:
+        """Insert a single (symbol, timestamp, oi_value) row.
+
+        Implementations must be idempotent on the (symbol, timestamp)
+        primary key — `ON CONFLICT DO NOTHING` semantics so concurrent
+        writers don't trip duplicate-key errors.
+        """
+        ...
+
+    @abstractmethod
+    async def get_recent_snapshots(
+        self, lookback_seconds: int
+    ) -> list[dict]:
+        """Return rows newer than ``now - lookback_seconds``.
+
+        Each row is a dict with keys ``symbol``, ``timestamp`` (epoch
+        seconds, float), ``oi_value`` (float). Ordered by symbol then
+        timestamp ascending so the caller can rebuild per-symbol deques
+        in chronological order with a single linear scan.
+        """
+        ...
+
+    @abstractmethod
+    async def cleanup_older_than(self, seconds: int) -> int:
+        """Delete snapshots older than ``now - seconds``. Returns row count."""
+        ...
+
 
 class CycleRepository(ABC):
     """Repository for analysis cycle records.

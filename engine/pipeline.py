@@ -32,8 +32,8 @@ from engine.memory.cycle_memory import CycleMemory
 from engine.memory.reflection_rules import ReflectionRules
 from engine.memory.regime_history import RegimeHistory
 from engine.signals.registry import SignalRegistry
-from engine.types import MarketData, TradeAction
-from storage.repositories.base import CycleRepository
+from engine.types import MarketData, OrderResult, TradeAction
+from storage.repositories.base import CycleRepository, TradeRepository
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,8 @@ class AnalysisPipeline:
         user_id: str,
         is_shadow: bool = False,
         portfolio_risk_manager: PortfolioRiskManager | None = None,
+        shadow_fixed_size_usd: float | None = None,
+        trade_repo: TradeRepository | None = None,
     ) -> None:
         self._ohlcv = ohlcv_fetcher
         self._flow_agent = flow_agent
@@ -82,6 +84,24 @@ class AnalysisPipeline:
         # views. Defaults to False so existing test fixtures and the
         # live production path remain byte-for-byte unchanged.
         self._is_shadow = is_shadow
+        # Shadow signal-quality data collection: when set, entry actions
+        # bypass the PortfolioRiskManager entirely and use this fixed
+        # dollar size. The PRM's per-asset / portfolio exposure caps
+        # would otherwise block every shadow trade once a few simulated
+        # positions accumulated (they never close in pure shadow until
+        # the Sentinel SL/TP monitor lands), starving the data moat of
+        # signal samples. Pure shadow mode (sim adapter, fake money)
+        # opts in; paper mode (real testnet orders) does NOT — its PRM
+        # validation is the whole point of paper trading.
+        self._shadow_fixed_size_usd = shadow_fixed_size_usd
+        # Trade repository for shadow trade lifecycle persistence. Live
+        # trades flow through native exchange SL/TP orders and don't
+        # need DB-backed monitoring; shadow trades do (positions live
+        # in SimulatedExchangeAdapter memory, never close on their own,
+        # don't survive restarts). When this repo is wired AND
+        # ``shadow_fixed_size_usd`` is set, ``record_trade_open`` is
+        # the path TraderBot calls after a successful execution.
+        self._trade_repo = trade_repo
 
         # Sprint Portfolio-Risk-Manager Task 4: PortfolioRiskManager
         # owns ALL position sizing for entry actions. Optional in the
@@ -215,6 +235,12 @@ class AnalysisPipeline:
             # PRM-attributed reason. Non-entry actions (HOLD / SKIP /
             # CLOSE_ALL) bypass PRM entirely — there's nothing to size.
             if (
+                self._shadow_fixed_size_usd is not None
+                and action.action in ("LONG", "SHORT", "ADD_LONG", "ADD_SHORT")
+            ):
+                # Shadow data-collection bypass: skip PRM, stamp fixed size.
+                action.position_size = float(self._shadow_fixed_size_usd)
+            elif (
                 self._prm is not None
                 and action.action in ("LONG", "SHORT", "ADD_LONG", "ADD_SHORT")
             ):
@@ -430,6 +456,86 @@ class AnalysisPipeline:
             f"DD_mult={sizing.drawdown_multiplier:.2f})"
         )
         return action
+
+    async def record_trade_open(
+        self, action: TradeAction, order_result: OrderResult
+    ) -> str | None:
+        """Persist a freshly-opened shadow trade to the trade repository.
+
+        Called by TraderBot after the executor returns a successful
+        OrderResult for a LONG / SHORT entry. The pipeline owns the
+        write because it has the full context (bot_id, user_id,
+        is_shadow, conviction, engine_version) that TraderBot does not.
+
+        Returns the new trade row ID, or ``None`` when the call is a
+        no-op (no trade_repo wired, not shadow data-collection mode,
+        unsuccessful order, non-entry action). Errors are logged and
+        swallowed — a persistence failure must NEVER bubble up and
+        crash the trading loop, per CLAUDE.md fire-and-forget rules.
+        """
+        if self._trade_repo is None:
+            return None
+        if self._shadow_fixed_size_usd is None:
+            # Only the shadow data-collection path persists trades
+            # via this code path right now. Live trades flow through
+            # the exchange's native SL/TP orders and are persisted
+            # by the existing tracking pipeline (when wired).
+            return None
+        if action.action not in ("LONG", "SHORT"):
+            return None
+        if not order_result.success:
+            return None
+
+        from uuid import uuid4
+
+        from quantagent.version import ENGINE_VERSION
+
+        symbol = self._config.symbol
+        timeframe = self._config.timeframe
+        direction = action.action  # "LONG" | "SHORT"
+        entry_price = order_result.fill_price
+        if entry_price is None or entry_price <= 0:
+            logger.warning(
+                f"[{symbol}] record_trade_open: missing/invalid fill_price "
+                f"({entry_price!r}) — skipping trade persist"
+            )
+            return None
+        # tp_price column collapses tp1/tp2 into a single primary level.
+        # Prefer tp1 (the conservative target the executor sells half at).
+        tp_price = action.tp1_price
+
+        trade_id = str(uuid4())
+        trade_row = {
+            "id": trade_id,
+            "user_id": self._user_id,
+            "bot_id": self._bot_id,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "direction": direction,
+            "entry_price": float(entry_price),
+            "size": float(action.position_size or 0.0),
+            "sl_price": float(action.sl_price) if action.sl_price else None,
+            "tp_price": float(tp_price) if tp_price else None,
+            "conviction_score": action.conviction_score,
+            "entry_time": datetime.now(timezone.utc),
+            "status": "open",
+            "is_shadow": True,
+            "engine_version": ENGINE_VERSION,
+        }
+
+        try:
+            await self._trade_repo.save_trade(trade_row)
+        except Exception:
+            logger.exception(
+                f"[{symbol}] record_trade_open: failed to persist shadow trade"
+            )
+            return None
+
+        logger.info(
+            f"Shadow trade OPENED: {symbol} {direction} @ {entry_price}, "
+            f"SL={action.sl_price}, TP={tp_price}, size=${action.position_size}"
+        )
+        return trade_id
 
     @staticmethod
     def _convert_to_skip(action: TradeAction, reason: str) -> TradeAction:

@@ -116,6 +116,7 @@ class SentinelMonitor:
         escalation_step: float = ESCALATION_STEP,
         max_escalation: float = MAX_ESCALATION,
         skip_cooldown_seconds: int = SKIP_COOLDOWN_SECONDS,
+        trade_repo=None,
     ) -> None:
         self._adapter = adapter
         self._bus = event_bus
@@ -161,6 +162,13 @@ class SentinelMonitor:
         # Candle-close detection — set to the latest candle's timestamp
         # on each tick; clears all escalations when it advances.
         self._last_candle_ts: int | None = None
+
+        # Trade repository for shadow SL/TP monitoring. Optional —
+        # when not provided, the SL/TP monitor is a no-op (live and
+        # paper modes don't need DB-backed monitoring because their
+        # SL/TP orders live on the exchange). Set to ``repos.trades``
+        # in shadow mode by BotRunner.
+        self._trade_repo = trade_repo
 
         self._scorer = ReadinessScorer()
         self._last_trigger: datetime | None = None
@@ -338,6 +346,19 @@ class SentinelMonitor:
                     exc_info=True,
                 )
 
+        # ── Shadow SL/TP monitor ──
+        # Pure shadow trades have no exchange-side SL/TP orders, so the
+        # Sentinel polls the trades table for opens on this symbol and
+        # closes any whose SL or TP was breached by the latest candle's
+        # high/low. No-op when no trade_repo is wired (live + paper).
+        if self._trade_repo is not None:
+            try:
+                await self._check_shadow_sl_tp(candles[-1])
+            except Exception:
+                logger.exception(
+                    f"Sentinel: shadow SL/TP check failed for {self._symbol}"
+                )
+
         # Compute indicators
         indicators = compute_all_indicators(candles)
         current_price = float(candles[-1]["close"])
@@ -430,6 +451,198 @@ class SentinelMonitor:
                 logger.warning("Sentinel: failed to emit SetupDetected", exc_info=True)
 
         return score, conditions
+
+    # ------------------------------------------------------------------
+    # Shadow SL/TP monitor
+    # ------------------------------------------------------------------
+
+    async def _check_shadow_sl_tp(self, candle: dict) -> None:
+        """Close open shadow trades whose SL/TP was breached by ``candle``.
+
+        Pure shadow positions have no exchange-side SL/TP orders, so we
+        scan the trades table for opens on this symbol on every Sentinel
+        tick and resolve any whose ``sl_price`` / ``tp_price`` falls
+        inside the latest candle's [low, high] range. PnL is computed
+        per-direction at the breach price (NOT at the candle close —
+        the simulated fill happens at the level), and ``forward_max_r``
+        is updated when the candle's favourable extreme exceeds the
+        prior best. SL takes precedence over TP when both fire on the
+        same candle (conservative — assume the bad side hit first).
+
+        Errors per trade are logged and swallowed so one malformed row
+        cannot freeze the monitor for the rest of the open positions.
+        """
+        try:
+            high = float(candle["high"])
+            low = float(candle["low"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                f"Sentinel: bad candle for shadow SL/TP check on {self._symbol}: {candle!r}"
+            )
+            return
+
+        try:
+            open_trades = await self._trade_repo.get_open_shadow_trades(self._symbol)
+        except Exception:
+            logger.exception(
+                f"Sentinel: get_open_shadow_trades failed for {self._symbol}"
+            )
+            return
+
+        if not open_trades:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        for trade in open_trades:
+            try:
+                await self._resolve_shadow_trade(trade, high=high, low=low, now=now)
+            except Exception:
+                logger.exception(
+                    f"Sentinel: failed to resolve shadow trade {trade.get('id')!r}"
+                )
+
+    async def _resolve_shadow_trade(
+        self, trade: dict, *, high: float, low: float, now: datetime
+    ) -> None:
+        """Apply SL/TP gates to a single shadow trade and close if hit."""
+        trade_id = trade.get("id")
+        direction = (trade.get("direction") or "").upper()
+        entry_price = trade.get("entry_price")
+        size_usd = trade.get("size") or 0.0
+        sl_price = trade.get("sl_price")
+        tp_price = trade.get("tp_price")
+
+        if not trade_id or entry_price is None or entry_price <= 0:
+            return
+
+        exit_price: float | None = None
+        exit_reason: str | None = None
+
+        if direction == "LONG":
+            if sl_price is not None and low <= float(sl_price):
+                exit_price, exit_reason = float(sl_price), "SL"
+            elif tp_price is not None and high >= float(tp_price):
+                exit_price, exit_reason = float(tp_price), "TP"
+            favourable_extreme = high
+        elif direction == "SHORT":
+            if sl_price is not None and high >= float(sl_price):
+                exit_price, exit_reason = float(sl_price), "SL"
+            elif tp_price is not None and low <= float(tp_price):
+                exit_price, exit_reason = float(tp_price), "TP"
+            favourable_extreme = low
+        else:
+            logger.warning(
+                f"Sentinel: shadow trade {trade_id} has unknown direction {direction!r}"
+            )
+            return
+
+        # forward_max_r — track the best unrealised R the trade ever
+        # reached so we can later evaluate whether SL/TP placement was
+        # too tight. R = (favourable distance from entry) / (initial SL
+        # distance from entry). Skipped when SL is missing — there is
+        # no risk denominator to normalise against.
+        try:
+            await self._update_forward_max_r(
+                trade=trade,
+                favourable_extreme=favourable_extreme,
+                direction=direction,
+            )
+        except Exception:
+            logger.debug(
+                f"Sentinel: forward_max_r update failed for {trade_id}",
+                exc_info=True,
+            )
+
+        if exit_price is None or exit_reason is None:
+            return
+
+        pnl = self._compute_shadow_pnl(
+            direction=direction,
+            entry_price=float(entry_price),
+            exit_price=exit_price,
+            size_usd=float(size_usd),
+        )
+
+        try:
+            await self._trade_repo.close_trade(
+                trade_id,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                exit_time=now,
+                pnl=pnl,
+            )
+        except Exception:
+            logger.exception(
+                f"Sentinel: close_trade failed for {trade_id}"
+            )
+            return
+
+        logger.info(
+            f"Shadow trade CLOSED: {self._symbol} {direction} @ {exit_price}, "
+            f"reason={exit_reason}, PnL=${pnl:.2f}"
+        )
+
+    @staticmethod
+    def _compute_shadow_pnl(
+        *, direction: str, entry_price: float, exit_price: float, size_usd: float
+    ) -> float:
+        """USD PnL for a $-notional perp position.
+
+        ``size_usd`` is the dollar notional opened at ``entry_price``,
+        so the implied base-unit quantity is ``size_usd / entry_price``.
+        Long PnL = (exit - entry) * qty; short PnL flips the sign. This
+        matches Hyperliquid's perp PnL formula for an isolated position
+        ignoring fees / funding (which the shadow path doesn't model).
+        """
+        if entry_price <= 0:
+            return 0.0
+        if direction == "LONG":
+            return (exit_price - entry_price) * size_usd / entry_price
+        if direction == "SHORT":
+            return (entry_price - exit_price) * size_usd / entry_price
+        return 0.0
+
+    async def _update_forward_max_r(
+        self, *, trade: dict, favourable_extreme: float, direction: str
+    ) -> None:
+        """Update ``forward_max_r`` if this candle exceeded the prior best.
+
+        R-multiple is signed: positive when the favourable extreme is
+        farther from entry than the SL distance is. Skipped when SL is
+        missing or zero (no denominator). The new value is only written
+        when it strictly improves on the stored max — the column starts
+        NULL on insert and converges upward.
+        """
+        entry_price = trade.get("entry_price")
+        sl_price = trade.get("sl_price")
+        if entry_price is None or sl_price is None:
+            return
+        entry_price = float(entry_price)
+        sl_price = float(sl_price)
+        risk = abs(entry_price - sl_price)
+        if risk <= 0:
+            return
+
+        if direction == "LONG":
+            favourable_distance = favourable_extreme - entry_price
+        else:
+            favourable_distance = entry_price - favourable_extreme
+
+        new_r = favourable_distance / risk
+        prior = trade.get("forward_max_r")
+        if prior is not None and float(prior) >= new_r:
+            return
+
+        try:
+            await self._trade_repo.update_trade(
+                trade["id"], {"forward_max_r": float(new_r)}
+            )
+        except Exception:
+            logger.debug(
+                f"Sentinel: update_trade(forward_max_r) failed for {trade['id']}",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Macro blackout helper

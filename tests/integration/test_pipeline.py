@@ -1323,3 +1323,197 @@ class TestSimAdapterPriceFeed:
         # The pipeline must have fed the price before returning
         assert "BTC-USDC" in sim._current_prices
         assert sim._current_prices["BTC-USDC"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Shadow data-collection PRM bypass + trade persistence
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineShadowFixedSizeBypass:
+    """Pipeline path used by pure shadow mode for signal-quality data
+    collection. ``shadow_fixed_size_usd`` overrides PRM entirely so the
+    per-asset / portfolio exposure caps cannot starve the dataset, and
+    ``trade_repo`` is wired so freshly opened entries persist with full
+    SL/TP fields ready for the Sentinel monitor to watch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bypass_skips_prm_and_stamps_fixed_size(self, repos) -> None:
+        llm = MockLLMProvider({
+            "conviction_agent": _conviction_response(),
+            "decision_agent": _decision_response("LONG"),
+        })
+        # PRM that would normally REJECT every trade (zero balance) — if
+        # the bypass works, the action still emerges as LONG with the
+        # fixed size and PRM is never consulted.
+        adapter = _PortfolioStateAdapter(balance=0.0, positions=[])
+        prm = PortfolioRiskManager(PortfolioRiskConfig())
+        config = TradingConfig(
+            symbol="BTC-USDC", timeframe="1h",
+            conviction_threshold=0.5, account_balance=10_000.0,
+        )
+        pipeline = AnalysisPipeline(
+            ohlcv_fetcher=OHLCVFetcher(adapter, config),
+            flow_agent=FlowAgent(),
+            signal_registry=_basic_registry(),
+            conviction_agent=ConvictionAgent(llm),
+            decision_agent=DecisionAgent(llm, config),
+            event_bus=InProcessBus(),
+            cycle_memory=CycleMemory(repos.cycles),
+            reflection_rules=ReflectionRules(repos.rules),
+            cross_bot=CrossBotSignals(repos.cross_bot),
+            regime_history=RegimeHistory(),
+            cycle_repo=repos.cycles,
+            config=config,
+            bot_id="shadow-bot",
+            user_id="shadow-user",
+            is_shadow=True,
+            portfolio_risk_manager=prm,
+            shadow_fixed_size_usd=500.0,
+            trade_repo=repos.trades,
+        )
+
+        action = await pipeline.run_cycle()
+
+        assert action.action == "LONG"
+        assert action.position_size == 500.0
+        # PRM should NOT have touched the adapter
+        assert adapter.balance_calls == 0
+        assert adapter.positions_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_record_trade_open_persists_shadow_row(self, repos) -> None:
+        from engine.types import OrderResult, TradeAction
+
+        config = TradingConfig(symbol="BTC-USDC", timeframe="1h")
+        pipeline = AnalysisPipeline(
+            ohlcv_fetcher=OHLCVFetcher(MockAdapter(), config),
+            flow_agent=FlowAgent(),
+            signal_registry=SignalRegistry(),
+            conviction_agent=ConvictionAgent(MockLLMProvider({})),
+            decision_agent=DecisionAgent(MockLLMProvider({}), config),
+            event_bus=InProcessBus(),
+            cycle_memory=CycleMemory(repos.cycles),
+            reflection_rules=ReflectionRules(repos.rules),
+            cross_bot=CrossBotSignals(repos.cross_bot),
+            regime_history=RegimeHistory(),
+            cycle_repo=repos.cycles,
+            config=config,
+            bot_id="b-shadow",
+            user_id="u-shadow",
+            is_shadow=True,
+            shadow_fixed_size_usd=500.0,
+            trade_repo=repos.trades,
+        )
+
+        action = TradeAction(
+            action="LONG", conviction_score=0.72, position_size=500.0,
+            sl_price=64000.0, tp1_price=67000.0, tp2_price=68000.0,
+            rr_ratio=2.0, atr_multiplier=1.5,
+            reasoning="test", raw_output="", risk_weight=1.0,
+        )
+        order = OrderResult(
+            success=True, order_id="o1", fill_price=65000.0,
+            fill_size=500.0 / 65000.0, error=None,
+        )
+        trade_id = await pipeline.record_trade_open(action, order)
+
+        assert trade_id is not None
+        row = await repos.trades.get_trade(trade_id)
+        assert row is not None
+        assert row["bot_id"] == "b-shadow"
+        assert row["user_id"] == "u-shadow"
+        assert row["symbol"] == "BTC-USDC"
+        assert row["direction"] == "LONG"
+        assert row["entry_price"] == 65000.0
+        assert row["sl_price"] == 64000.0
+        assert row["tp_price"] == 67000.0
+        assert row["size"] == 500.0
+        assert row["status"] == "open"
+        assert bool(row["is_shadow"]) is True
+
+        # And it shows up in the shadow query
+        opens = await repos.trades.get_open_shadow_trades("BTC-USDC")
+        assert len(opens) == 1
+        assert opens[0]["id"] == trade_id
+
+    @pytest.mark.asyncio
+    async def test_record_trade_open_no_op_without_shadow_size(self, repos) -> None:
+        from engine.types import OrderResult, TradeAction
+
+        config = TradingConfig(symbol="BTC-USDC", timeframe="1h")
+        pipeline = AnalysisPipeline(
+            ohlcv_fetcher=OHLCVFetcher(MockAdapter(), config),
+            flow_agent=FlowAgent(),
+            signal_registry=SignalRegistry(),
+            conviction_agent=ConvictionAgent(MockLLMProvider({})),
+            decision_agent=DecisionAgent(MockLLMProvider({}), config),
+            event_bus=InProcessBus(),
+            cycle_memory=CycleMemory(repos.cycles),
+            reflection_rules=ReflectionRules(repos.rules),
+            cross_bot=CrossBotSignals(repos.cross_bot),
+            regime_history=RegimeHistory(),
+            cycle_repo=repos.cycles,
+            config=config,
+            bot_id="b-live",
+            user_id="u-live",
+            trade_repo=repos.trades,
+            # No shadow_fixed_size_usd → live path → no auto-persist
+        )
+        action = TradeAction(
+            action="LONG", conviction_score=0.72, position_size=500.0,
+            sl_price=64000.0, tp1_price=67000.0, tp2_price=68000.0,
+            rr_ratio=2.0, atr_multiplier=1.5,
+            reasoning="test", raw_output="", risk_weight=1.0,
+        )
+        order = OrderResult(
+            success=True, order_id="o", fill_price=65000.0,
+            fill_size=0.01, error=None,
+        )
+        trade_id = await pipeline.record_trade_open(action, order)
+        assert trade_id is None
+
+    @pytest.mark.asyncio
+    async def test_record_trade_open_skips_failed_orders(self, repos) -> None:
+        from engine.types import OrderResult, TradeAction
+
+        config = TradingConfig(symbol="BTC-USDC", timeframe="1h")
+        pipeline = AnalysisPipeline(
+            ohlcv_fetcher=OHLCVFetcher(MockAdapter(), config),
+            flow_agent=FlowAgent(),
+            signal_registry=SignalRegistry(),
+            conviction_agent=ConvictionAgent(MockLLMProvider({})),
+            decision_agent=DecisionAgent(MockLLMProvider({}), config),
+            event_bus=InProcessBus(),
+            cycle_memory=CycleMemory(repos.cycles),
+            reflection_rules=ReflectionRules(repos.rules),
+            cross_bot=CrossBotSignals(repos.cross_bot),
+            regime_history=RegimeHistory(),
+            cycle_repo=repos.cycles,
+            config=config,
+            bot_id="b-shadow",
+            user_id="u-shadow",
+            is_shadow=True,
+            shadow_fixed_size_usd=500.0,
+            trade_repo=repos.trades,
+        )
+        action = TradeAction(
+            action="LONG", conviction_score=0.72, position_size=500.0,
+            sl_price=64000.0, tp1_price=67000.0, tp2_price=68000.0,
+            rr_ratio=2.0, atr_multiplier=1.5,
+            reasoning="test", raw_output="", risk_weight=1.0,
+        )
+        failed = OrderResult(
+            success=False, order_id=None, fill_price=None,
+            fill_size=None, error="rejected",
+        )
+        assert await pipeline.record_trade_open(action, failed) is None
+
+
+def _basic_registry() -> SignalRegistry:
+    registry = SignalRegistry()
+    registry.register(MockSignalProducer("indicator_agent", "BULLISH", 0.72))
+    registry.register(MockSignalProducer("pattern_agent", "BULLISH", 0.80))
+    registry.register(MockSignalProducer("trend_agent", "BULLISH", 0.65))
+    return registry

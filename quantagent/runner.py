@@ -248,11 +248,18 @@ class BotRunner:
             adapter = self._adapter_factory(exchange, mode=mode)
             self._adapters[symbol] = adapter
             self._bot_manager.set_adapter_for_symbol(symbol, adapter)
+            # In shadow mode the Sentinel needs the trades repo so it
+            # can monitor open shadow positions for SL/TP breaches on
+            # every tick — the simulated adapter has no native SL/TP
+            # orders. Live + paper modes get None: their SL/TP orders
+            # live on the exchange.
+            sentinel_trade_repo = self._repos.trades if self._shadow_mode else None
             sentinel = SentinelMonitor(
                 adapter=adapter,
                 event_bus=self._bus,
                 symbol=symbol,
                 timeframe=timeframe,
+                trade_repo=sentinel_trade_repo,
             )
             # Activate the Task 11 escalation feedback loop: subscribe
             # this sentinel to SetupResult events so it learns whether

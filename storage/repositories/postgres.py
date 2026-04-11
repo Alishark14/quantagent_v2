@@ -15,6 +15,7 @@ from storage.repositories.base import (
     BotRepository,
     CrossBotRepository,
     CycleRepository,
+    OISnapshotRepository,
     RuleRepository,
     TradeRepository,
 )
@@ -45,7 +46,9 @@ CREATE TABLE IF NOT EXISTS trades (
     engine_version TEXT,
     status TEXT NOT NULL DEFAULT 'open',
     forward_max_r DOUBLE PRECISION,
-    is_shadow BOOLEAN NOT NULL DEFAULT FALSE
+    is_shadow BOOLEAN NOT NULL DEFAULT FALSE,
+    sl_price DOUBLE PRECISION,
+    tp_price DOUBLE PRECISION
 );
 """
 
@@ -93,6 +96,20 @@ CREATE TABLE IF NOT EXISTS bots (
 );
 """
 
+_CREATE_OI_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS oi_snapshots (
+    symbol TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    oi_value DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (symbol, timestamp)
+);
+"""
+
+_CREATE_OI_SNAPSHOTS_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_oi_snapshots_symbol_time
+    ON oi_snapshots (symbol, timestamp DESC);
+"""
+
 _CREATE_CROSS_BOT_SIGNALS = """
 CREATE TABLE IF NOT EXISTS cross_bot_signals (
     id TEXT PRIMARY KEY,
@@ -111,6 +128,8 @@ _ALL_TABLES = [
     _CREATE_RULES,
     _CREATE_BOTS,
     _CREATE_CROSS_BOT_SIGNALS,
+    _CREATE_OI_SNAPSHOTS,
+    _CREATE_OI_SNAPSHOTS_INDEX,
 ]
 
 
@@ -177,9 +196,9 @@ class PostgresTradeRepository(TradeRepository):
                    (id, user_id, bot_id, symbol, timeframe, direction,
                     entry_price, exit_price, size, pnl, r_multiple,
                     entry_time, exit_time, exit_reason, conviction_score,
-                    engine_version, status, is_shadow)
+                    engine_version, status, is_shadow, sl_price, tp_price)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                           $12, $13, $14, $15, $16, $17, $18)""",
+                           $12, $13, $14, $15, $16, $17, $18, $19, $20)""",
                 trade_id,
                 trade["user_id"],
                 trade["bot_id"],
@@ -198,6 +217,8 @@ class PostgresTradeRepository(TradeRepository):
                 trade.get("engine_version"),
                 trade.get("status", "open"),
                 bool(trade.get("is_shadow", False)),
+                trade.get("sl_price"),
+                trade.get("tp_price"),
             )
         return trade_id
 
@@ -244,6 +265,37 @@ class PostgresTradeRepository(TradeRepository):
         query = f"UPDATE trades SET {', '.join(set_parts)} WHERE id = ${len(values)}"
         async with self._pool.acquire() as conn:
             result = await conn.execute(query, *values)
+            return result != "UPDATE 0"
+
+    async def get_open_shadow_trades(self, symbol: str) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM trades WHERE symbol = $1 "
+                "AND status = 'open' AND is_shadow = TRUE",
+                symbol,
+            )
+            return [_record_to_dict(r) for r in rows]
+
+    async def close_trade(
+        self,
+        trade_id: str,
+        *,
+        exit_price: float,
+        exit_reason: str,
+        exit_time,
+        pnl: float,
+    ) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE trades SET status = 'closed', exit_price = $1, "
+                "exit_reason = $2, exit_time = $3, pnl = $4 "
+                "WHERE id = $5 AND status = 'open'",
+                float(exit_price),
+                exit_reason,
+                _to_datetime(exit_time),
+                float(pnl),
+                trade_id,
+            )
             return result != "UPDATE 0"
 
 
@@ -501,6 +553,60 @@ class PostgresCrossBotRepository(CrossBotRepository):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# OI Snapshot Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+class PostgresOISnapshotRepository(OISnapshotRepository):
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def insert_snapshot(
+        self, symbol: str, timestamp, oi_value: float
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO oi_snapshots (symbol, timestamp, oi_value) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (symbol, timestamp) DO NOTHING",
+                symbol,
+                _to_datetime(timestamp),
+                float(oi_value),
+            )
+
+    async def get_recent_snapshots(self, lookback_seconds: int) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, timestamp, oi_value FROM oi_snapshots "
+                "WHERE timestamp > NOW() - make_interval(secs => $1) "
+                "ORDER BY symbol, timestamp ASC",
+                int(lookback_seconds),
+            )
+            return [
+                {
+                    "symbol": r["symbol"],
+                    "timestamp": r["timestamp"].timestamp(),
+                    "oi_value": float(r["oi_value"]),
+                }
+                for r in rows
+            ]
+
+    async def cleanup_older_than(self, seconds: int) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM oi_snapshots "
+                "WHERE timestamp < NOW() - make_interval(secs => $1)",
+                int(seconds),
+            )
+            # asyncpg returns "DELETE <n>"
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Container
 # ──────────────────────────────────────────────────────────────────────
 
@@ -533,6 +639,7 @@ class PostgresRepositories:
         self._rules: PostgresRuleRepository | None = None
         self._bots: PostgresBotRepository | None = None
         self._cross_bot: PostgresCrossBotRepository | None = None
+        self._oi_snapshots: PostgresOISnapshotRepository | None = None
 
     async def init_db(self) -> None:
         """Create connection pool and all tables if they don't exist.
@@ -563,6 +670,7 @@ class PostgresRepositories:
             self._rules = None
             self._bots = None
             self._cross_bot = None
+            self._oi_snapshots = None
             logger.info("PostgreSQL connection pool closed")
 
     async def health_check(self) -> dict:
@@ -626,3 +734,9 @@ class PostgresRepositories:
         if self._cross_bot is None:
             self._cross_bot = PostgresCrossBotRepository(self._ensure_pool())
         return self._cross_bot
+
+    @property
+    def oi_snapshots(self) -> PostgresOISnapshotRepository:
+        if self._oi_snapshots is None:
+            self._oi_snapshots = PostgresOISnapshotRepository(self._ensure_pool())
+        return self._oi_snapshots

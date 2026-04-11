@@ -14,6 +14,7 @@ from storage.repositories.base import (
     BotRepository,
     CrossBotRepository,
     CycleRepository,
+    OISnapshotRepository,
     RuleRepository,
     TradeRepository,
 )
@@ -44,7 +45,9 @@ CREATE TABLE IF NOT EXISTS trades (
     engine_version TEXT,
     status TEXT NOT NULL DEFAULT 'open',
     forward_max_r REAL,
-    is_shadow INTEGER NOT NULL DEFAULT 0
+    is_shadow INTEGER NOT NULL DEFAULT 0,
+    sl_price REAL,
+    tp_price REAL
 );
 """
 
@@ -92,6 +95,20 @@ CREATE TABLE IF NOT EXISTS bots (
 );
 """
 
+_CREATE_OI_SNAPSHOTS = """
+CREATE TABLE IF NOT EXISTS oi_snapshots (
+    symbol TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    oi_value REAL NOT NULL,
+    PRIMARY KEY (symbol, timestamp)
+);
+"""
+
+_CREATE_OI_SNAPSHOTS_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_oi_snapshots_symbol_time
+    ON oi_snapshots (symbol, timestamp DESC);
+"""
+
 _CREATE_CROSS_BOT_SIGNALS = """
 CREATE TABLE IF NOT EXISTS cross_bot_signals (
     id TEXT PRIMARY KEY,
@@ -110,6 +127,8 @@ _ALL_TABLES = [
     _CREATE_RULES,
     _CREATE_BOTS,
     _CREATE_CROSS_BOT_SIGNALS,
+    _CREATE_OI_SNAPSHOTS,
+    _CREATE_OI_SNAPSHOTS_INDEX,
 ]
 
 
@@ -135,8 +154,8 @@ class SQLiteTradeRepository(TradeRepository):
                    (id, user_id, bot_id, symbol, timeframe, direction,
                     entry_price, exit_price, size, pnl, r_multiple,
                     entry_time, exit_time, exit_reason, conviction_score,
-                    engine_version, status, is_shadow)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    engine_version, status, is_shadow, sl_price, tp_price)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     trade_id,
                     trade["user_id"],
@@ -156,6 +175,8 @@ class SQLiteTradeRepository(TradeRepository):
                     trade.get("engine_version"),
                     trade.get("status", "open"),
                     1 if trade.get("is_shadow") else 0,
+                    trade.get("sl_price"),
+                    trade.get("tp_price"),
                 ),
             )
             await db.commit()
@@ -205,6 +226,40 @@ class SQLiteTradeRepository(TradeRepository):
             cursor = await db.execute(
                 f"UPDATE trades SET {set_clauses} WHERE id = ?",
                 values,
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_open_shadow_trades(self, symbol: str) -> list[dict]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM trades WHERE symbol = ? "
+                "AND status = 'open' AND is_shadow = 1",
+                (symbol,),
+            ) as cursor:
+                return [dict(row) async for row in cursor]
+
+    async def close_trade(
+        self,
+        trade_id: str,
+        *,
+        exit_price: float,
+        exit_reason: str,
+        exit_time,
+        pnl: float,
+    ) -> bool:
+        # Coerce timestamp to ISO string for SQLite TEXT column
+        if hasattr(exit_time, "isoformat"):
+            exit_time_str = exit_time.isoformat()
+        else:
+            exit_time_str = str(exit_time)
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "UPDATE trades SET status = 'closed', exit_price = ?, "
+                "exit_reason = ?, exit_time = ?, pnl = ? "
+                "WHERE id = ? AND status = 'open'",
+                (float(exit_price), exit_reason, exit_time_str, float(pnl), trade_id),
             )
             await db.commit()
             return cursor.rowcount > 0
@@ -487,6 +542,71 @@ class SQLiteCrossBotRepository(CrossBotRepository):
                 return [dict(row) async for row in cursor]
 
 
+# ──────────────────────────────────────────────────────────────────────
+# OI Snapshot Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _to_epoch(value) -> float:
+    """Coerce a timestamp to epoch seconds (float)."""
+    if value is None:
+        return datetime.now(timezone.utc).timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    raise TypeError(f"Cannot coerce {type(value).__name__} to epoch seconds")
+
+
+class SQLiteOISnapshotRepository(OISnapshotRepository):
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    async def insert_snapshot(
+        self, symbol: str, timestamp, oi_value: float
+    ) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO oi_snapshots (symbol, timestamp, oi_value) "
+                "VALUES (?, ?, ?)",
+                (symbol, _to_epoch(timestamp), float(oi_value)),
+            )
+            await db.commit()
+
+    async def get_recent_snapshots(self, lookback_seconds: int) -> list[dict]:
+        cutoff = datetime.now(timezone.utc).timestamp() - float(lookback_seconds)
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT symbol, timestamp, oi_value FROM oi_snapshots "
+                "WHERE timestamp > ? "
+                "ORDER BY symbol, timestamp ASC",
+                (cutoff,),
+            ) as cursor:
+                rows = [dict(row) async for row in cursor]
+        return [
+            {
+                "symbol": r["symbol"],
+                "timestamp": float(r["timestamp"]),
+                "oi_value": float(r["oi_value"]),
+            }
+            for r in rows
+        ]
+
+    async def cleanup_older_than(self, seconds: int) -> int:
+        cutoff = datetime.now(timezone.utc).timestamp() - float(seconds)
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM oi_snapshots WHERE timestamp < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return cursor.rowcount or 0
+
+
 # ─────────────��────────────────────────────────���───────────────────────
 # Container
 # ─────────────────────────────────���────────────────────────────────────
@@ -502,6 +622,7 @@ class SQLiteRepositories:
         self._rules = SQLiteRuleRepository(db_path)
         self._bots = SQLiteBotRepository(db_path)
         self._cross_bot = SQLiteCrossBotRepository(db_path)
+        self._oi_snapshots = SQLiteOISnapshotRepository(db_path)
 
     async def init_db(self) -> None:
         """Create all tables if they don't exist."""
@@ -530,3 +651,7 @@ class SQLiteRepositories:
     @property
     def cross_bot(self) -> SQLiteCrossBotRepository:
         return self._cross_bot
+
+    @property
+    def oi_snapshots(self) -> SQLiteOISnapshotRepository:
+        return self._oi_snapshots

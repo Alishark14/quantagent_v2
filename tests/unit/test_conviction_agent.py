@@ -22,6 +22,7 @@ class MockLLMProvider(LLMProvider):
         self._response_content = response_content
         self.last_system_prompt: str | None = None
         self.last_user_prompt: str | None = None
+        self.last_temperature: float | None = None
         self.call_count = 0
 
     async def generate_text(
@@ -35,6 +36,7 @@ class MockLLMProvider(LLMProvider):
     ) -> LLMResponse:
         self.last_system_prompt = system_prompt
         self.last_user_prompt = user_prompt
+        self.last_temperature = temperature
         self.call_count += 1
         return LLMResponse(
             content=self._response_content,
@@ -654,3 +656,32 @@ class TestConvictionRawOutput:
         result = await agent.evaluate(_make_signals(), _make_market_data())
 
         assert result.raw_output == raw
+
+
+# ---------------------------------------------------------------------------
+# Tests: Deterministic temperature
+# ---------------------------------------------------------------------------
+
+
+class TestConvictionDeterministicTemperature:
+    """ConvictionAgent must call the LLM at temperature=0.0 so identical
+    evidence produces identical scores. The agent is an evaluator, not
+    a creative writer — non-zero sampling temperature was producing
+    spreads of 0.25–0.65 on the same signal pattern.
+    """
+
+    @pytest.mark.asyncio
+    async def test_temperature_is_zero(self) -> None:
+        llm = MockLLMProvider(_high_conviction_response())
+        agent = ConvictionAgent(llm)
+        await agent.evaluate(_make_signals(), _make_market_data())
+        assert llm.last_temperature == 0.0
+
+    @pytest.mark.asyncio
+    async def test_repeated_calls_use_zero_temperature(self) -> None:
+        llm = MockLLMProvider(_high_conviction_response())
+        agent = ConvictionAgent(llm)
+        for _ in range(3):
+            await agent.evaluate(_make_signals(), _make_market_data())
+            assert llm.last_temperature == 0.0
+        assert llm.call_count == 3

@@ -179,7 +179,7 @@ class ConvictionAgent:
                 user_prompt=user,
                 agent_name="conviction_agent",
                 max_tokens=768,
-                temperature=0.3,
+                temperature=0.0,
                 cache_system_prompt=True,
             )
 

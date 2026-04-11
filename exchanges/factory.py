@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # Default starting balance for the shadow simulated exchange. Can be
 # overridden by the caller via ``get_adapter(..., initial_balance=N)`` or
 # by the QUANTAGENT_SHADOW_BALANCE env var.
-_DEFAULT_SHADOW_BALANCE = 10_000.0
+_DEFAULT_SHADOW_BALANCE = 100_000.0
 
 
 # Attribute names that may hold a live signing key on the underlying

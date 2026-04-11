@@ -100,6 +100,35 @@ class TestMigrationStructure:
         assert "DROP VIEW IF EXISTS live_trades" in content
         assert "DROP VIEW IF EXISTS live_cycles" in content
 
+    def test_trade_sl_tp_columns_migration_exists(self):
+        path = Path("alembic/versions/004_trade_sl_tp_columns.py")
+        assert path.exists()
+        content = path.read_text()
+        assert 'revision: str = "004"' in content
+        assert 'down_revision: Union[str, None] = "003"' in content
+        assert '"sl_price"' in content
+        assert '"tp_price"' in content
+        assert "def downgrade" in content
+        assert 'drop_column("trades", "tp_price")' in content
+        assert 'drop_column("trades", "sl_price")' in content
+
+    def test_oi_snapshots_migration_exists(self):
+        path = Path("alembic/versions/005_oi_snapshots.py")
+        assert path.exists()
+        content = path.read_text()
+        assert 'revision: str = "005"' in content
+        assert 'down_revision: Union[str, None] = "004"' in content
+        assert 'create_table(' in content
+        assert '"oi_snapshots"' in content
+        assert '"symbol"' in content
+        assert '"timestamp"' in content
+        assert '"oi_value"' in content
+        assert "PrimaryKeyConstraint" in content
+        assert 'create_index(' in content
+        assert "ix_oi_snapshots_symbol_time" in content
+        assert "def downgrade" in content
+        assert 'drop_table("oi_snapshots")' in content
+
 
 # ---------------------------------------------------------------------------
 # SQLite schema parity tests — ensure DDL matches migration
@@ -124,7 +153,10 @@ class TestSQLiteSchemaParity:
             ) as cursor:
                 tables = [row[0] async for row in cursor]
 
-        expected = ["bots", "cross_bot_signals", "cycles", "rules", "trades"]
+        expected = [
+            "bots", "cross_bot_signals", "cycles", "oi_snapshots",
+            "rules", "trades",
+        ]
         assert tables == expected
 
     @pytest.mark.asyncio
@@ -163,6 +195,7 @@ class TestSQLiteSchemaParity:
             "entry_price", "exit_price", "size", "pnl", "r_multiple",
             "entry_time", "exit_time", "exit_reason", "conviction_score",
             "engine_version", "status", "forward_max_r", "is_shadow",
+            "sl_price", "tp_price",
         }
         assert columns == expected
 

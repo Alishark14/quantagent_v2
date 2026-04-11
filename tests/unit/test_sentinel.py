@@ -929,3 +929,217 @@ class TestSentinelEscalationBusIntegration:
         ))
 
         assert sentinel.current_threshold() == pytest.approx(0.30)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Sentinel shadow SL/TP monitor
+# ---------------------------------------------------------------------------
+
+
+class _FakeShadowTradeRepo:
+    """In-memory stand-in for the shadow-trade columns this test exercises."""
+
+    def __init__(self, trades: list[dict]) -> None:
+        self.trades = {t["id"]: dict(t) for t in trades}
+        self.closes: list[dict] = []
+        self.updates: list[tuple[str, dict]] = []
+
+    async def get_open_shadow_trades(self, symbol: str) -> list[dict]:
+        return [
+            dict(t)
+            for t in self.trades.values()
+            if t["symbol"] == symbol
+            and t["status"] == "open"
+            and t.get("is_shadow")
+        ]
+
+    async def close_trade(
+        self, trade_id, *, exit_price, exit_reason, exit_time, pnl
+    ) -> bool:
+        if trade_id not in self.trades:
+            return False
+        if self.trades[trade_id]["status"] != "open":
+            return False
+        self.trades[trade_id]["status"] = "closed"
+        self.trades[trade_id]["exit_price"] = exit_price
+        self.trades[trade_id]["exit_reason"] = exit_reason
+        self.trades[trade_id]["exit_time"] = exit_time
+        self.trades[trade_id]["pnl"] = pnl
+        self.closes.append({
+            "id": trade_id, "exit_price": exit_price,
+            "exit_reason": exit_reason, "pnl": pnl,
+        })
+        return True
+
+    async def update_trade(self, trade_id: str, updates: dict) -> bool:
+        if trade_id not in self.trades:
+            return False
+        self.trades[trade_id].update(updates)
+        self.updates.append((trade_id, updates))
+        return True
+
+
+def _shadow_candle(*, high: float, low: float, close: float | None = None) -> dict:
+    return {
+        "timestamp": 1700000000,
+        "open": (high + low) / 2,
+        "high": high,
+        "low": low,
+        "close": close if close is not None else (high + low) / 2,
+        "volume": 1000.0,
+    }
+
+
+class TestSentinelShadowSLTPMonitor:
+
+    @pytest.mark.asyncio
+    async def test_long_sl_breach_closes_trade(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "LONG",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 64000.0, "tp_price": 67000.0,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=65500.0, low=63500.0)
+        )
+        assert repo.trades["t1"]["status"] == "closed"
+        assert repo.trades["t1"]["exit_reason"] == "SL"
+        assert repo.trades["t1"]["exit_price"] == 64000.0
+        # PnL = (64000 - 65000) * 500 / 65000 ≈ -7.69
+        assert repo.trades["t1"]["pnl"] == pytest.approx(-7.6923, rel=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_long_tp_hit_closes_trade(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "LONG",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 64000.0, "tp_price": 67000.0,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=67500.0, low=66500.0)
+        )
+        assert repo.trades["t1"]["status"] == "closed"
+        assert repo.trades["t1"]["exit_reason"] == "TP"
+        assert repo.trades["t1"]["pnl"] == pytest.approx(15.3846, rel=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_short_sl_breach_closes_trade(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "SHORT",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 66000.0, "tp_price": 63000.0,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=66500.0, low=64500.0)
+        )
+        assert repo.trades["t1"]["status"] == "closed"
+        assert repo.trades["t1"]["exit_reason"] == "SL"
+        assert repo.trades["t1"]["pnl"] == pytest.approx(-7.6923, rel=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_short_tp_hit_closes_trade(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "SHORT",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 66000.0, "tp_price": 63000.0,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=63500.0, low=62500.0)
+        )
+        assert repo.trades["t1"]["status"] == "closed"
+        assert repo.trades["t1"]["exit_reason"] == "TP"
+        assert repo.trades["t1"]["pnl"] == pytest.approx(15.3846, rel=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_no_breach_leaves_trade_open(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "LONG",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 64000.0, "tp_price": 67000.0,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=65500.0, low=64500.0)
+        )
+        assert repo.trades["t1"]["status"] == "open"
+        # forward_max_r should still be tracked
+        assert any("forward_max_r" in u[1] for u in repo.updates)
+
+    @pytest.mark.asyncio
+    async def test_sl_takes_precedence_over_tp_on_same_candle(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "LONG",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 64000.0, "tp_price": 66000.0,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        # Wide candle straddles both SL and TP
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=66500.0, low=63500.0)
+        )
+        assert repo.trades["t1"]["exit_reason"] == "SL"
+
+    @pytest.mark.asyncio
+    async def test_no_repo_is_no_op(self) -> None:
+        # Should not raise / require any DB call when trade_repo is None
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=None,
+        )
+        # _check_shadow_sl_tp is only called from _check_once when
+        # trade_repo is set, but verify the guard exists at that level
+        # by inspecting the attribute.
+        assert sentinel._trade_repo is None
+
+    @pytest.mark.asyncio
+    async def test_forward_max_r_updates_on_favourable_extreme(self) -> None:
+        repo = _FakeShadowTradeRepo([{
+            "id": "t1", "symbol": "BTC-USDC", "status": "open",
+            "is_shadow": True, "direction": "LONG",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 64000.0, "tp_price": 70000.0,
+            "forward_max_r": None,
+        }])
+        sentinel = SentinelMonitor(
+            MockSentinelAdapter(), InProcessBus(), "BTC-USDC",
+            trade_repo=repo,
+        )
+        # Candle high 66000 → 1R favourable (entry 65000, risk 1000)
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=66000.0, low=64500.0)
+        )
+        assert repo.trades["t1"]["forward_max_r"] == pytest.approx(1.0)
+
+        # Lower extreme — should NOT regress max
+        await sentinel._check_shadow_sl_tp(
+            _shadow_candle(high=65500.0, low=64500.0)
+        )
+        assert repo.trades["t1"]["forward_max_r"] == pytest.approx(1.0)

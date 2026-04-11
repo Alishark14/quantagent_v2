@@ -143,6 +143,92 @@ class TestTradeRepository:
         fetched = await repos.trades.get_trade("my-custom-id")
         assert fetched is not None
 
+    @pytest.mark.asyncio
+    async def test_save_trade_persists_sl_tp(self, repos):
+        trade_id = await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+            "entry_price": 65000.0,
+            "sl_price": 64000.0,
+            "tp_price": 67000.0,
+            "is_shadow": True,
+        })
+        fetched = await repos.trades.get_trade(trade_id)
+        assert fetched["sl_price"] == 64000.0
+        assert fetched["tp_price"] == 67000.0
+        assert bool(fetched["is_shadow"]) is True
+
+    @pytest.mark.asyncio
+    async def test_get_open_shadow_trades_filters(self, repos):
+        from datetime import datetime, timezone
+        # Open shadow on BTC — should appear
+        sid = await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+            "is_shadow": True,
+            "entry_time": datetime.now(timezone.utc).isoformat(),
+        })
+        # Closed shadow on BTC — must NOT appear
+        await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "SHORT", "status": "closed",
+            "is_shadow": True,
+        })
+        # Open LIVE on BTC — must NOT appear (not shadow)
+        await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+            "is_shadow": False,
+        })
+        # Open shadow on ETH — wrong symbol, must NOT appear
+        await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "ETH-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+            "is_shadow": True,
+        })
+
+        rows = await repos.trades.get_open_shadow_trades("BTC-USDC")
+        assert len(rows) == 1
+        assert rows[0]["id"] == sid
+
+    @pytest.mark.asyncio
+    async def test_close_trade_marks_closed_with_pnl(self, repos):
+        from datetime import datetime, timezone
+        trade_id = await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "open",
+            "entry_price": 65000.0, "size": 500.0,
+            "sl_price": 64000.0, "tp_price": 67000.0,
+            "is_shadow": True,
+        })
+        ok = await repos.trades.close_trade(
+            trade_id,
+            exit_price=67000.0,
+            exit_reason="TP",
+            exit_time=datetime.now(timezone.utc),
+            pnl=15.38,
+        )
+        assert ok is True
+        fetched = await repos.trades.get_trade(trade_id)
+        assert fetched["status"] == "closed"
+        assert fetched["exit_price"] == 67000.0
+        assert fetched["exit_reason"] == "TP"
+        assert fetched["pnl"] == pytest.approx(15.38)
+
+    @pytest.mark.asyncio
+    async def test_close_trade_idempotent_on_already_closed(self, repos):
+        from datetime import datetime, timezone
+        trade_id = await repos.trades.save_trade({
+            "user_id": "u", "bot_id": "b", "symbol": "BTC-USDC",
+            "timeframe": "1h", "direction": "LONG", "status": "closed",
+            "is_shadow": True,
+        })
+        ok = await repos.trades.close_trade(
+            trade_id, exit_price=1.0, exit_reason="SL",
+            exit_time=datetime.now(timezone.utc), pnl=0.0,
+        )
+        assert ok is False
+
 
 # ---------------------------------------------------------------------------
 # CycleRepository
@@ -487,6 +573,89 @@ class TestCrossBotRepository:
 
 
 # ---------------------------------------------------------------------------
+# OISnapshotRepository
+# ---------------------------------------------------------------------------
+
+
+class TestOISnapshotRepository:
+
+    @pytest.mark.asyncio
+    async def test_insert_and_recent_roundtrip(self, repos):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        await repos.oi_snapshots.insert_snapshot("BTC-USDC", now, 1_000_000.0)
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now - timedelta(seconds=120), 990_000.0
+        )
+        rows = await repos.oi_snapshots.get_recent_snapshots(600)
+        assert len(rows) == 2
+        # ascending order
+        assert rows[0]["oi_value"] == 990_000.0
+        assert rows[1]["oi_value"] == 1_000_000.0
+        assert rows[0]["symbol"] == "BTC-USDC"
+
+    @pytest.mark.asyncio
+    async def test_insert_idempotent_on_conflict(self, repos):
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc)
+        await repos.oi_snapshots.insert_snapshot("BTC-USDC", ts, 1_000_000.0)
+        # Same (symbol, ts) — should silently no-op
+        await repos.oi_snapshots.insert_snapshot("BTC-USDC", ts, 9_999_999.0)
+        rows = await repos.oi_snapshots.get_recent_snapshots(600)
+        assert len(rows) == 1
+        assert rows[0]["oi_value"] == 1_000_000.0  # original wins
+
+    @pytest.mark.asyncio
+    async def test_get_recent_filters_by_lookback(self, repos):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        # Inside the 60s window
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now - timedelta(seconds=30), 1.0
+        )
+        # Outside the 60s window
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now - timedelta(seconds=600), 2.0
+        )
+        rows = await repos.oi_snapshots.get_recent_snapshots(60)
+        assert len(rows) == 1
+        assert rows[0]["oi_value"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_older_than(self, repos):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now, 1.0
+        )
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now - timedelta(seconds=10_000), 2.0
+        )
+        deleted = await repos.oi_snapshots.cleanup_older_than(3_600)
+        assert deleted == 1
+        rows = await repos.oi_snapshots.get_recent_snapshots(86_400)
+        assert len(rows) == 1
+        assert rows[0]["oi_value"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_recent_orders_by_symbol_then_time(self, repos):
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        await repos.oi_snapshots.insert_snapshot(
+            "ETH-USDC", now - timedelta(seconds=30), 50.0
+        )
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now - timedelta(seconds=60), 1.0
+        )
+        await repos.oi_snapshots.insert_snapshot(
+            "BTC-USDC", now - timedelta(seconds=30), 2.0
+        )
+        rows = await repos.oi_snapshots.get_recent_snapshots(600)
+        symbols = [r["symbol"] for r in rows]
+        assert symbols == ["BTC-USDC", "BTC-USDC", "ETH-USDC"]
+
+
+# ---------------------------------------------------------------------------
 # Shadow-mode filtering — Task 2 of the Shadow Redesign sprint
 # ---------------------------------------------------------------------------
 
@@ -767,6 +936,7 @@ class TestFactory:
         assert hasattr(repos, "rules")
         assert hasattr(repos, "bots")
         assert hasattr(repos, "cross_bot")
+        assert hasattr(repos, "oi_snapshots")
 
         # Clean up
         del os.environ["SQLITE_DB_PATH"]

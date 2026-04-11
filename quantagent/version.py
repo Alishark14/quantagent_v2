@@ -10,7 +10,7 @@ Versioning: YYYY.MM.MAJOR.MINOR.PATCH[-prerelease][+build]
 Every trade record stores engine_version + prompt_versions at decision time.
 """
 
-ENGINE_VERSION = "2026.04.3.11.0-alpha.1"
+ENGINE_VERSION = "2026.04.3.13.0-alpha.1"
 
 API_VERSION = "v1"
 

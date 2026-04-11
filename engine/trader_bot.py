@@ -61,6 +61,17 @@ class TraderBot:
                 symbol = self._pipeline._config.symbol
                 order_result = await self._executor.execute(action, symbol)
 
+                # Persist a freshly-opened shadow trade so the Sentinel
+                # SL/TP monitor can later watch it. No-op for live mode
+                # and for non-entry actions (the pipeline guards both).
+                if order_result.success and action.action in ("LONG", "SHORT"):
+                    try:
+                        await self._pipeline.record_trade_open(action, order_result)
+                    except Exception:
+                        logger.exception(
+                            f"TraderBot {self._bot_id}: record_trade_open failed"
+                        )
+
                 # 3. Register position with Sentinel if opened
                 if (
                     order_result.success
