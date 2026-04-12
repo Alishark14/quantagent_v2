@@ -118,7 +118,9 @@ class SentinelMonitor:
         skip_cooldown_seconds: int = SKIP_COOLDOWN_SECONDS,
         trade_repo=None,
         price_feed=None,
+        sentinel_event_repo=None,
     ) -> None:
+        self._sentinel_event_repo = sentinel_event_repo
         self._adapter = adapter
         self._bus = event_bus
         self._symbol = symbol
@@ -170,6 +172,12 @@ class SentinelMonitor:
         # SL/TP orders live on the exchange). Set to ``repos.trades``
         # in shadow mode by BotRunner.
         self._trade_repo = trade_repo
+
+        # Taker fee rate for shadow PnL cost deduction (round-trip).
+        import os as _os
+        self._taker_fee_rate = float(
+            _os.environ.get("TAKER_FEE_RATE", "0.00035")
+        )
 
         # Sprint Week 7 Task 5: when an external SLTPMonitor is wired up
         # by main.py, it owns shadow SL/TP resolution at tick-level via
@@ -554,7 +562,40 @@ class SentinelMonitor:
             except Exception:
                 logger.warning("Sentinel: failed to emit SetupDetected", exc_info=True)
 
+            # Persist setup_detected event for analytics (fire-and-forget).
+            await self._record_sentinel_event(
+                "setup_detected", score, active_threshold,
+                "; ".join(triggered_names),
+            )
+
         return score, conditions
+
+    async def _record_sentinel_event(
+        self,
+        event_type: str,
+        readiness: float,
+        threshold: float,
+        reasoning: str,
+    ) -> None:
+        """Fire-and-forget insert into sentinel_events. Never blocks or crashes."""
+        if self._sentinel_event_repo is None:
+            return
+        try:
+            from uuid import uuid4
+            await self._sentinel_event_repo.insert_event({
+                "id": str(uuid4()),
+                "symbol": self._symbol,
+                "timeframe": self._timeframe,
+                "event_type": event_type,
+                "readiness_score": readiness,
+                "threshold": threshold,
+                "triggers_today": self._daily_trigger_count,
+                "reasoning": reasoning,
+            })
+        except Exception:
+            logger.debug(
+                "Sentinel: sentinel_event insert failed", exc_info=True
+            )
 
     # ------------------------------------------------------------------
     # Shadow SL/TP monitor
@@ -661,12 +702,35 @@ class SentinelMonitor:
         if exit_price is None or exit_reason is None:
             return
 
-        pnl = self._compute_shadow_pnl(
+        raw_pnl = self._compute_shadow_pnl(
             direction=direction,
             entry_price=float(entry_price),
             exit_price=exit_price,
             size_usd=float(size_usd),
         )
+
+        # Round-trip trading fee: taker fee on open + taker fee on close.
+        notional = float(size_usd)
+        trading_fee = 2.0 * self._taker_fee_rate * notional
+
+        # Funding cost estimate (same logic as SLTPMonitor).
+        funding_cost = 0.0
+        entry_time_raw = trade.get("entry_time")
+        funding_rate = trade.get("funding_rate")
+        if entry_time_raw is not None and funding_rate is not None:
+            try:
+                if isinstance(entry_time_raw, str):
+                    from datetime import datetime as _dt
+                    entry_dt = _dt.fromisoformat(entry_time_raw)
+                else:
+                    entry_dt = entry_time_raw
+                hold_seconds = (now - entry_dt).total_seconds()
+                funding_intervals = hold_seconds / 3600.0
+                funding_cost = abs(float(funding_rate) * notional * funding_intervals)
+            except Exception:
+                pass
+
+        pnl = raw_pnl - trading_fee - funding_cost
 
         try:
             await self._trade_repo.close_trade(
@@ -682,9 +746,26 @@ class SentinelMonitor:
             )
             return
 
+        # Persist cost breakdown alongside the adjusted pnl.
+        try:
+            await self._trade_repo.update_trade(
+                trade_id,
+                {
+                    "raw_pnl": float(raw_pnl),
+                    "trading_fee": float(trading_fee),
+                    "funding_cost": float(funding_cost),
+                },
+            )
+        except Exception:
+            logger.debug(
+                f"Sentinel: cost persist failed for {trade_id}",
+                exc_info=True,
+            )
+
         logger.info(
             f"Shadow trade CLOSED: {self._symbol} {direction} @ {exit_price}, "
-            f"reason={exit_reason}, PnL=${pnl:.2f}"
+            f"reason={exit_reason}, raw=${raw_pnl:.2f}, fee=${trading_fee:.2f}, "
+            f"funding=${funding_cost:.2f}, PnL=${pnl:.2f}"
         )
 
     @staticmethod

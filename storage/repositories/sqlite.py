@@ -15,9 +15,11 @@ from storage.repositories.base import (
     COTCacheRepository,
     CrossBotRepository,
     CycleRepository,
+    LLMCallRepository,
     OISnapshotRepository,
     RegSHOCacheRepository,
     RuleRepository,
+    SentinelEventRepository,
     TradeRepository,
 )
 
@@ -49,7 +51,18 @@ CREATE TABLE IF NOT EXISTS trades (
     forward_max_r REAL,
     is_shadow INTEGER NOT NULL DEFAULT 0,
     sl_price REAL,
-    tp_price REAL
+    tp_price REAL,
+    raw_pnl REAL,
+    trading_fee REAL,
+    funding_cost REAL,
+    tp2_price REAL,
+    atr_multiplier REAL,
+    risk_weight REAL,
+    regime TEXT,
+    instrument_type TEXT DEFAULT 'perpetual',
+    exchange TEXT DEFAULT 'hyperliquid',
+    leverage REAL,
+    margin_type TEXT DEFAULT 'cross'
 );
 """
 
@@ -65,7 +78,14 @@ CREATE TABLE IF NOT EXISTS cycles (
     conviction_json TEXT,
     action TEXT,
     conviction_score REAL,
-    is_shadow INTEGER NOT NULL DEFAULT 0
+    is_shadow INTEGER NOT NULL DEFAULT 0,
+    llm_input_tokens INTEGER,
+    llm_output_tokens INTEGER,
+    llm_cost_usd REAL,
+    duration_ms INTEGER,
+    exchange TEXT DEFAULT 'hyperliquid',
+    regime TEXT,
+    mode TEXT DEFAULT 'live'
 );
 """
 
@@ -93,7 +113,11 @@ CREATE TABLE IF NOT EXISTS bots (
     created_at TEXT NOT NULL,
     last_health TEXT,
     is_shadow INTEGER NOT NULL DEFAULT 0,
-    mode TEXT NOT NULL DEFAULT 'live'
+    mode TEXT NOT NULL DEFAULT 'live',
+    instrument_type TEXT DEFAULT 'perpetual',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    last_cycle_at TEXT
 );
 """
 
@@ -156,6 +180,62 @@ CREATE TABLE IF NOT EXISTS cross_bot_signals (
 );
 """
 
+_CREATE_SENTINEL_EVENTS = """
+CREATE TABLE IF NOT EXISTS sentinel_events (
+    id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    readiness_score REAL,
+    threshold REAL,
+    triggers_today INTEGER,
+    cooldown_remaining_s REAL,
+    reasoning TEXT,
+    is_shadow INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+_CREATE_SENTINEL_EVENTS_IX1 = """
+CREATE INDEX IF NOT EXISTS ix_sentinel_events_symbol
+    ON sentinel_events (symbol, timestamp DESC);
+"""
+
+_CREATE_SENTINEL_EVENTS_IX2 = """
+CREATE INDEX IF NOT EXISTS ix_sentinel_events_type
+    ON sentinel_events (event_type, timestamp DESC);
+"""
+
+_CREATE_LLM_CALLS = """
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id TEXT PRIMARY KEY,
+    cycle_id TEXT,
+    bot_id TEXT,
+    agent_name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cost_usd REAL,
+    latency_ms INTEGER,
+    cache_hit INTEGER DEFAULT 0,
+    error TEXT,
+    is_shadow INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+_CREATE_LLM_CALLS_IX1 = """
+CREATE INDEX IF NOT EXISTS ix_llm_calls_cycle ON llm_calls (cycle_id);
+"""
+
+_CREATE_LLM_CALLS_IX2 = """
+CREATE INDEX IF NOT EXISTS ix_llm_calls_agent ON llm_calls (agent_name, timestamp DESC);
+"""
+
+_CREATE_LLM_CALLS_IX3 = """
+CREATE INDEX IF NOT EXISTS ix_llm_calls_model ON llm_calls (model);
+"""
+
 _ALL_TABLES = [
     _CREATE_TRADES,
     _CREATE_CYCLES,
@@ -168,6 +248,13 @@ _ALL_TABLES = [
     _CREATE_COT_CACHE_INDEX,
     _CREATE_REGSHO_CACHE,
     _CREATE_REGSHO_CACHE_INDEX,
+    _CREATE_SENTINEL_EVENTS,
+    _CREATE_SENTINEL_EVENTS_IX1,
+    _CREATE_SENTINEL_EVENTS_IX2,
+    _CREATE_LLM_CALLS,
+    _CREATE_LLM_CALLS_IX1,
+    _CREATE_LLM_CALLS_IX2,
+    _CREATE_LLM_CALLS_IX3,
 ]
 
 
@@ -193,8 +280,10 @@ class SQLiteTradeRepository(TradeRepository):
                    (id, user_id, bot_id, symbol, timeframe, direction,
                     entry_price, exit_price, size, pnl, r_multiple,
                     entry_time, exit_time, exit_reason, conviction_score,
-                    engine_version, status, is_shadow, sl_price, tp_price)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    engine_version, status, is_shadow, sl_price, tp_price,
+                    tp2_price, atr_multiplier, risk_weight, regime,
+                    instrument_type, exchange, leverage, margin_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     trade_id,
                     trade["user_id"],
@@ -216,6 +305,14 @@ class SQLiteTradeRepository(TradeRepository):
                     1 if trade.get("is_shadow") else 0,
                     trade.get("sl_price"),
                     trade.get("tp_price"),
+                    trade.get("tp2_price"),
+                    trade.get("atr_multiplier"),
+                    trade.get("risk_weight"),
+                    trade.get("regime"),
+                    trade.get("instrument_type", "perpetual"),
+                    trade.get("exchange", "hyperliquid"),
+                    trade.get("leverage"),
+                    trade.get("margin_type", "cross"),
                 ),
             )
             await db.commit()
@@ -321,8 +418,10 @@ class SQLiteCycleRepository(CycleRepository):
                 """INSERT INTO cycles
                    (id, bot_id, symbol, timeframe, timestamp,
                     indicators_json, signals_json, conviction_json,
-                    action, conviction_score, is_shadow)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    action, conviction_score, is_shadow,
+                    llm_input_tokens, llm_output_tokens, llm_cost_usd,
+                    duration_ms, exchange, regime, mode)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     cycle_id,
                     cycle["bot_id"],
@@ -335,6 +434,13 @@ class SQLiteCycleRepository(CycleRepository):
                     cycle.get("action"),
                     cycle.get("conviction_score"),
                     1 if cycle.get("is_shadow") else 0,
+                    cycle.get("llm_input_tokens"),
+                    cycle.get("llm_output_tokens"),
+                    cycle.get("llm_cost_usd"),
+                    cycle.get("duration_ms"),
+                    cycle.get("exchange", "hyperliquid"),
+                    cycle.get("regime"),
+                    cycle.get("mode", "live"),
                 ),
             )
             await db.commit()
@@ -449,8 +555,9 @@ class SQLiteBotRepository(BotRepository):
             await db.execute(
                 """INSERT INTO bots
                    (id, user_id, symbol, timeframe, exchange, status,
-                    config_json, created_at, last_health, is_shadow, mode)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    config_json, created_at, last_health, is_shadow, mode,
+                    instrument_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     bot_id,
                     bot["user_id"],
@@ -463,6 +570,7 @@ class SQLiteBotRepository(BotRepository):
                     None,
                     is_shadow,
                     mode,
+                    bot.get("instrument_type", "perpetual"),
                 ),
             )
             await db.commit()
@@ -517,7 +625,7 @@ class SQLiteBotRepository(BotRepository):
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM bots WHERE status = ? AND mode = ?",
+                "SELECT * FROM bots WHERE status = ? AND mode = ? AND is_active = 1",
                 ("active", mode),
             ) as cursor:
                 rows = [dict(row) async for row in cursor]
@@ -537,10 +645,114 @@ class SQLiteBotRepository(BotRepository):
             await db.commit()
             return cursor.rowcount > 0
 
+    async def deactivate_bot(self, bot_id: str) -> bool:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "UPDATE bots SET is_active = 0, deactivated_at = ? WHERE id = ?",
+                (_now_iso(), bot_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
-# ────���─────────────────────────────��───────────────────────────────────
+    async def update_last_cycle(self, bot_id: str) -> bool:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "UPDATE bots SET last_cycle_at = ? WHERE id = ?",
+                (_now_iso(), bot_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sentinel Event Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+class SQLiteSentinelEventRepository(SentinelEventRepository):
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    async def insert_event(self, event: dict) -> None:
+        event_id = event.get("id") or str(uuid4())
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """INSERT INTO sentinel_events
+                   (id, symbol, timeframe, timestamp, event_type,
+                    readiness_score, threshold, triggers_today,
+                    cooldown_remaining_s, reasoning, is_shadow)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    event["symbol"],
+                    event["timeframe"],
+                    event.get("timestamp", _now_iso()),
+                    event["event_type"],
+                    event.get("readiness_score"),
+                    event.get("threshold"),
+                    event.get("triggers_today"),
+                    event.get("cooldown_remaining_s"),
+                    event.get("reasoning"),
+                    1 if event.get("is_shadow") else 0,
+                ),
+            )
+            await db.commit()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LLM Call Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+class SQLiteLLMCallRepository(LLMCallRepository):
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    async def insert_call(self, call: dict) -> None:
+        call_id = call.get("id") or str(uuid4())
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """INSERT INTO llm_calls
+                   (id, cycle_id, bot_id, agent_name, model, timestamp,
+                    input_tokens, output_tokens, cost_usd, latency_ms,
+                    cache_hit, error, is_shadow)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    call_id,
+                    call.get("cycle_id"),
+                    call.get("bot_id"),
+                    call["agent_name"],
+                    call["model"],
+                    call.get("timestamp", _now_iso()),
+                    call.get("input_tokens"),
+                    call.get("output_tokens"),
+                    call.get("cost_usd"),
+                    call.get("latency_ms"),
+                    1 if call.get("cache_hit") else 0,
+                    call.get("error"),
+                    1 if call.get("is_shadow") else 0,
+                ),
+            )
+            await db.commit()
+
+    async def get_calls_by_agent(
+        self, agent_name: str, limit: int = 100
+    ) -> list[dict]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM llm_calls WHERE agent_name = ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (agent_name, limit),
+            ) as cursor:
+                return [dict(row) async for row in cursor]
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Cross-Bot Repository
-# ───────────────────────��──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
 
 
 class SQLiteCrossBotRepository(CrossBotRepository):
@@ -859,6 +1071,8 @@ class SQLiteRepositories:
         self._oi_snapshots = SQLiteOISnapshotRepository(db_path)
         self._cot_cache = SQLiteCOTCacheRepository(db_path)
         self._regsho_cache = SQLiteRegSHOCacheRepository(db_path)
+        self._sentinel_events = SQLiteSentinelEventRepository(db_path)
+        self._llm_calls = SQLiteLLMCallRepository(db_path)
 
     async def init_db(self) -> None:
         """Create all tables if they don't exist."""
@@ -899,3 +1113,11 @@ class SQLiteRepositories:
     @property
     def regsho_cache(self) -> SQLiteRegSHOCacheRepository:
         return self._regsho_cache
+
+    @property
+    def sentinel_events(self) -> SQLiteSentinelEventRepository:
+        return self._sentinel_events
+
+    @property
+    def llm_calls(self) -> SQLiteLLMCallRepository:
+        return self._llm_calls

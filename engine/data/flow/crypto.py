@@ -83,12 +83,19 @@ _OI_BUFFER_MAXLEN = _DEFAULT_OI_LOOKBACK_SECONDS // 30
 
 
 def _maxlen_for_lookback(lookback_seconds: int) -> int:
-    """Pick a deque maxlen for ``lookback_seconds`` at one snapshot per 30s.
+    """Pick a deque maxlen that safely holds the full lookback window.
 
-    Floored at 60 so even a sub-30-minute lookback keeps enough room
-    for the warmup edge cases (Sentinel intervals can drift).
+    When a WebSocket PriceFeed is wired, ``_on_oi_update`` pushes
+    snapshots every ~3 seconds (from Hyperliquid's ``activeAssetCtx``
+    channel). The old formula ``lookback // 30`` assumed 30-second
+    Sentinel polls and produced a 240-entry deque for a 2h lookback —
+    WebSocket pushes filled it in ~12 minutes, evicting all warmed
+    historical data and keeping ``_compute_oi_delta`` permanently in
+    the cold-start path. Using ``lookback_seconds`` directly gives one
+    entry per second of lookback — plenty of headroom for any push
+    rate while staying trivial in memory (~16 bytes per entry).
     """
-    return max(60, lookback_seconds // 30)
+    return max(600, lookback_seconds)
 
 
 class CryptoFlowProvider(FlowProvider):
@@ -279,6 +286,11 @@ class CryptoFlowProvider(FlowProvider):
                 oi_change, oi_trend = self._compute_oi_delta(symbol, now, float(oi))
                 result["oi_change_4h"] = oi_change
                 result["oi_trend"] = oi_trend
+                buf = self._oi_history.get(symbol)
+                logger.debug(
+                    f"CryptoFlowProvider {symbol}: deque_len={len(buf) if buf else 0}, "
+                    f"lookback_s={self._lookback_seconds}, oi_change={oi_change}"
+                )
         except Exception as e:
             logger.warning(f"CryptoFlowProvider: OI unavailable for {symbol}: {e}")
 

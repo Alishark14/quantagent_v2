@@ -258,6 +258,7 @@ class BotRunner:
             # orders. Live + paper modes get None: their SL/TP orders
             # live on the exchange.
             sentinel_trade_repo = self._repos.trades if self._shadow_mode else None
+            sentinel_event_repo = getattr(self._repos, "sentinel_events", None)
             sentinel = SentinelMonitor(
                 adapter=adapter,
                 event_bus=self._bus,
@@ -265,6 +266,7 @@ class BotRunner:
                 timeframe=timeframe,
                 trade_repo=sentinel_trade_repo,
                 price_feed=self._price_feed,
+                sentinel_event_repo=sentinel_event_repo,
             )
             # When a PriceFeed is wired, the external SLTPMonitor owns
             # tick-level SL/TP resolution — tell Sentinel to skip its

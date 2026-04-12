@@ -189,7 +189,8 @@ class TestSQLiteSchemaParity:
 
         expected = [
             "bots", "cot_cache", "cross_bot_signals", "cycles",
-            "oi_snapshots", "regsho_cache", "rules", "trades",
+            "llm_calls", "oi_snapshots", "regsho_cache", "rules",
+            "sentinel_events", "trades",
         ]
         assert tables == expected
 
@@ -208,7 +209,8 @@ class TestSQLiteSchemaParity:
         expected = {
             "id", "user_id", "symbol", "timeframe", "exchange",
             "status", "config_json", "created_at", "last_health",
-            "is_shadow", "mode",
+            "is_shadow", "mode", "instrument_type",
+            "is_active", "deactivated_at", "last_cycle_at",
         }
         assert columns == expected
 
@@ -230,6 +232,9 @@ class TestSQLiteSchemaParity:
             "entry_time", "exit_time", "exit_reason", "conviction_score",
             "engine_version", "status", "forward_max_r", "is_shadow",
             "sl_price", "tp_price",
+            "raw_pnl", "trading_fee", "funding_cost",
+            "tp2_price", "atr_multiplier", "risk_weight", "regime",
+            "instrument_type", "exchange", "leverage", "margin_type",
         }
         assert columns == expected
 
@@ -249,6 +254,8 @@ class TestSQLiteSchemaParity:
             "id", "bot_id", "symbol", "timeframe", "timestamp",
             "indicators_json", "signals_json", "conviction_json",
             "action", "conviction_score", "is_shadow",
+            "llm_input_tokens", "llm_output_tokens", "llm_cost_usd",
+            "duration_ms", "exchange", "regime", "mode",
         }
         assert columns == expected
 

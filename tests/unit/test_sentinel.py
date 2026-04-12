@@ -991,6 +991,15 @@ def _shadow_candle(*, high: float, low: float, close: float | None = None) -> di
 
 
 class TestSentinelShadowSLTPMonitor:
+    """Tests for shadow SL/TP gate logic (not fee math).
+
+    Fee rate is zeroed out so PnL assertions match the raw formula.
+    Fee-specific tests live in tests/unit/test_cost_tracking.py.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _zero_fee(self, monkeypatch):
+        monkeypatch.setenv("TAKER_FEE_RATE", "0")
 
     @pytest.mark.asyncio
     async def test_long_sl_breach_closes_trade(self) -> None:

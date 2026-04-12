@@ -15,6 +15,34 @@
 - **P3 — Low:** Future phase, no urgency
 - **Research:** Added by Research Agent, needs founder review
 
+### FlowAgent Post-Conviction Overlay Redesign
+Priority: HIGH
+Depends on: OI deque fix (shipped in v3.19.0), 1+ week of shadow data to verify OI rules produce non-NEUTRAL signals.
+
+Context: FlowAgent returned NEUTRAL on 139/139 cycles across all symbols.
+Root causes: (1) OI deque maxlen bug — WebSocket pushes at ~3s filled the
+240-entry deque in minutes, evicting all warmed historical data so
+`_compute_oi_delta` stayed permanently in the cold-start path; (2) 13 of
+19 symbols have no dedicated flow data provider (only crypto funding/OI,
+no options/COT/RegSHO data); (3) even when working, mixing code-computed
+flow signals with LLM-interpreted signals in the ConvictionAgent prompt
+caused NEUTRAL to be treated as uncertainty. FlowAgent disabled via feature
+flag as of v3.19.0.
+
+Proposed solution: Re-enable FlowAgent as a post-conviction code overlay:
+- ConvictionAgent scores on 3 LLM signals only (Indicator, Pattern, Trend)
+- After ConvictionAgent returns, apply flow overlay in code:
+  - flow matches conviction direction: score += 0.05 to 0.10
+  - flow contradicts conviction direction: score -= 0.05 to 0.10
+  - flow is NEUTRAL: score unchanged (zero impact)
+  - clamp to [0.0, 0.85]
+- Pure Python function, deterministic, testable, zero LLM cost
+- Requires: verify OI deque fix works on real data, confirm flow rules
+  fire non-NEUTRAL signals on at least BTC/ETH (which have options data)
+  and GOLD/SILVER (which have COT data) before re-enabling
+
+---
+
 ### Forex Flow Provider (COT + DXY Correlation)
 Priority: Low
 Depends on: CommodityFlowProvider pattern (Block 2)Build a ForexFlowProvider using the same cot_reports library but with the traders_in_financial_futures_fut report type instead of disaggregated_fut. The TFF report covers currency futures (EUR, GBP, JPY, CHF, AUD, CAD) with Dealer, Asset Manager, Leveraged Funds, and Other Reportable categories. Same weekly cadence, same CFTC source, same persistence pattern as CommodityFlowProvider. Additionally compute DXY (US Dollar Index) correlation — when DXY strengthens, risk assets (crypto, commodities) typically weaken. DXY data available free from FRED API (Federal Reserve Economic Data). Not needed until we add forex trading pairs to the engine. Current HIP-3 assets don't include forex.

@@ -656,7 +656,7 @@ class FlowSignalAgent(SignalProducer):
             reasoning = (
                 f"BEARISH divergence: price +{price_change_pct:.2f}% over the "
                 f"last {PRICE_LOOKBACK_CANDLES} candles while funding flipped to "
-                f"{funding:+.4f}% and OI dropped {oi_change:+.1f}% over 4h. "
+                f"{funding:+.4f}% and OI dropped {oi_change:+.1f}% over the lookback window. "
                 "Smart money is exiting into retail buying — classic "
                 "distribution pattern."
             )
@@ -729,10 +729,10 @@ class FlowSignalAgent(SignalProducer):
             reason_parts.append(f"funding {funding:+.4f}% (within normal band)")
         if oi_change is None:
             reason_parts.append(
-                "OI delta unavailable — provider does not yet track 4h OI history"
+                "OI delta unavailable — provider OI history buffer not yet warm"
             )
         else:
-            reason_parts.append(f"OI {oi_change:+.1f}% over 4h (no clear bias)")
+            reason_parts.append(f"OI {oi_change:+.1f}% over lookback (no clear bias)")
         if price_change_pct is None:
             reason_parts.append("insufficient candles for price-drift check")
         else:

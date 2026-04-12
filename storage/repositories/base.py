@@ -353,6 +353,49 @@ class BotRepository(ABC):
         """Update bot health snapshot. Returns True if bot was found."""
         ...
 
+    @abstractmethod
+    async def deactivate_bot(self, bot_id: str) -> bool:
+        """Set ``is_active=false`` and ``deactivated_at=now()``.
+
+        Returns True if the bot was found and deactivated. Idempotent —
+        calling on an already-deactivated bot is a no-op that returns True.
+        """
+        ...
+
+    @abstractmethod
+    async def update_last_cycle(self, bot_id: str) -> bool:
+        """Stamp ``last_cycle_at=now()`` on the bot row.
+
+        Called after every analysis cycle so the dedup logic can prefer
+        the most-recently-active bot when duplicates exist.
+        """
+        ...
+
+
+class SentinelEventRepository(ABC):
+    """Repository for sentinel setup/skip event analytics."""
+
+    @abstractmethod
+    async def insert_event(self, event: dict) -> None:
+        """Insert a sentinel event. Fire-and-forget — callers swallow errors."""
+        ...
+
+
+class LLMCallRepository(ABC):
+    """Repository for per-call LLM analytics."""
+
+    @abstractmethod
+    async def insert_call(self, call: dict) -> None:
+        """Insert an LLM call record. Fire-and-forget — callers swallow errors."""
+        ...
+
+    @abstractmethod
+    async def get_calls_by_agent(
+        self, agent_name: str, limit: int = 100
+    ) -> list[dict]:
+        """Return recent calls for an agent, newest first."""
+        ...
+
 
 class CrossBotRepository(ABC):
     """Repository for cross-bot signal sharing (user_id scoped)."""

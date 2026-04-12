@@ -46,10 +46,19 @@ class SLTPMonitor:
         is_shadow: bool = True,
         *,
         refresh_interval: float = 10.0,
+        taker_fee_rate: float | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._trade_repo = trade_repo
         self._is_shadow = is_shadow
+        # Configurable taker fee rate for round-trip fee calculation.
+        # Default reads from env or falls back to Hyperliquid's 0.035%.
+        import os
+        self._taker_fee_rate = (
+            taker_fee_rate
+            if taker_fee_rate is not None
+            else float(os.environ.get("TAKER_FEE_RATE", "0.00035"))
+        )
         # symbol → list of trade dicts. Trades are kept per-symbol so
         # the hot path can short-circuit on a single dict lookup.
         self._open_trades: dict[str, list[dict]] = {}
@@ -184,7 +193,7 @@ class SLTPMonitor:
         if exit_price is None or exit_reason is None:
             return
 
-        pnl = self._compute_pnl(
+        raw_pnl = self._compute_pnl(
             direction=direction,
             entry_price=float(entry_price),
             exit_price=exit_price,
@@ -192,6 +201,31 @@ class SLTPMonitor:
         )
 
         now = datetime.now(timezone.utc)
+
+        # Round-trip trading fee: taker fee on open + taker fee on close.
+        notional = float(size_usd)
+        trading_fee = 2.0 * self._taker_fee_rate * notional
+
+        # Funding cost estimate: funding_rate * notional * hours held.
+        # Hyperliquid charges funding hourly. If entry_time or funding
+        # data is unavailable, funding_cost stays at 0.
+        funding_cost = 0.0
+        entry_time_raw = trade.get("entry_time")
+        funding_rate = trade.get("funding_rate")
+        if entry_time_raw is not None and funding_rate is not None:
+            try:
+                if isinstance(entry_time_raw, str):
+                    from datetime import datetime as _dt
+                    entry_dt = _dt.fromisoformat(entry_time_raw)
+                else:
+                    entry_dt = entry_time_raw
+                hold_seconds = (now - entry_dt).total_seconds()
+                funding_intervals = hold_seconds / 3600.0
+                funding_cost = abs(float(funding_rate) * notional * funding_intervals)
+            except Exception:
+                pass  # funding_cost stays 0
+
+        pnl = raw_pnl - trading_fee - funding_cost
 
         try:
             await self._trade_repo.close_trade(
@@ -204,6 +238,23 @@ class SLTPMonitor:
         except Exception:
             logger.exception("SLTPMonitor: close_trade failed for %s", trade_id)
             return
+
+        # Persist raw_pnl, trading_fee, and funding_cost alongside the adjusted pnl.
+        try:
+            await self._trade_repo.update_trade(
+                str(trade_id),
+                {
+                    "raw_pnl": float(raw_pnl),
+                    "trading_fee": float(trading_fee),
+                    "funding_cost": float(funding_cost),
+                },
+            )
+        except Exception:
+            logger.debug(
+                "SLTPMonitor: raw_pnl/trading_fee persist failed for %s",
+                trade_id,
+                exc_info=True,
+            )
 
         # Persist the final forward_max_r if we have a better value than
         # what's stored on the trade row.
@@ -235,11 +286,15 @@ class SLTPMonitor:
             )
 
         logger.info(
-            "SLTPMonitor: %s %s hit %s at %.4f (PnL=$%.2f)",
+            "SLTPMonitor: %s %s hit %s at %.4f "
+            "(raw=$%.2f, fee=$%.2f, funding=$%.2f, PnL=$%.2f)",
             symbol,
             direction,
             exit_reason,
             exit_price,
+            raw_pnl,
+            trading_fee,
+            funding_cost,
             pnl,
         )
 

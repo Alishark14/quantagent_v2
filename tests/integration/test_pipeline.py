@@ -1428,7 +1428,8 @@ class TestPipelineShadowFixedSizeBypass:
         assert row["direction"] == "LONG"
         assert row["entry_price"] == 65000.0
         assert row["sl_price"] == 64000.0
-        assert row["tp_price"] == 67000.0
+        # Shadow mode uses tp2 (full RR) since there are no partial exits.
+        assert row["tp_price"] == 68000.0
         assert row["size"] == 500.0
         assert row["status"] == "open"
         assert bool(row["is_shadow"]) is True

@@ -45,3 +45,27 @@ class LLMProvider(ABC):
         temperature: float = 0.3,
         cache_system_prompt: bool = True,
     ) -> LLMResponse: ...
+
+    # ------------------------------------------------------------------
+    # Per-cycle LLM usage tracking (concrete — shared by all providers)
+    # ------------------------------------------------------------------
+
+    def reset_usage(self) -> None:
+        """Reset per-cycle token/cost accumulators. Called at cycle start."""
+        self._cycle_input_tokens = 0
+        self._cycle_output_tokens = 0
+        self._cycle_cost = 0.0
+
+    def get_usage(self) -> dict:
+        """Return accumulated usage since last reset."""
+        return {
+            "input_tokens": getattr(self, "_cycle_input_tokens", 0),
+            "output_tokens": getattr(self, "_cycle_output_tokens", 0),
+            "cost_usd": round(getattr(self, "_cycle_cost", 0.0), 6),
+        }
+
+    def _accumulate_usage(self, response: LLMResponse) -> None:
+        """Add a response's token counts to the cycle accumulators."""
+        self._cycle_input_tokens = getattr(self, "_cycle_input_tokens", 0) + response.input_tokens
+        self._cycle_output_tokens = getattr(self, "_cycle_output_tokens", 0) + response.output_tokens
+        self._cycle_cost = getattr(self, "_cycle_cost", 0.0) + response.cost

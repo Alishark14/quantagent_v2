@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
-from engine.config import TradingConfig
+from engine.config import DEFAULT_PROFILES, TradingConfig, get_dynamic_profile
 from engine.conviction.agent import ConvictionAgent
 from engine.data.flow import FlowAgent
 from engine.data.ohlcv import OHLCVFetcher
@@ -26,6 +27,7 @@ from engine.events import (
 )
 from engine.execution.agent import DecisionAgent
 from engine.execution.portfolio_risk_manager import PortfolioRiskManager
+from engine.execution.risk_profiles import compute_sl_tp
 from engine.memory import build_memory_context
 from engine.memory.cross_bot import CrossBotSignals
 from engine.memory.cycle_memory import CycleMemory
@@ -33,6 +35,7 @@ from engine.memory.reflection_rules import ReflectionRules
 from engine.memory.regime_history import RegimeHistory
 from engine.signals.registry import SignalRegistry
 from engine.types import MarketData, OrderResult, TradeAction
+from llm.base import LLMProvider
 from storage.repositories.base import CycleRepository, TradeRepository
 
 logger = logging.getLogger(__name__)
@@ -61,6 +64,9 @@ class AnalysisPipeline:
         portfolio_risk_manager: PortfolioRiskManager | None = None,
         shadow_fixed_size_usd: float | None = None,
         trade_repo: TradeRepository | None = None,
+        llm_provider: LLMProvider | None = None,
+        bot_repo=None,
+        mode: str = "live",
     ) -> None:
         self._ohlcv = ohlcv_fetcher
         self._flow_agent = flow_agent
@@ -129,6 +135,21 @@ class AnalysisPipeline:
         # config_json so a restart doesn't lose the high-water mark.
         self._peak_equity: float = 0.0
 
+        self._bot_repo = bot_repo
+        self._mode = mode
+
+        # LLM provider for per-cycle usage tracking. When wired,
+        # run_cycle() resets the provider's accumulators at cycle start
+        # and reads them at cycle end to record token counts + cost.
+        self._llm_provider = llm_provider
+
+        # Cached from the latest run_cycle() for record_trade_open()
+        # to recompute SL/TP from the actual fill price instead of the
+        # stale candle close that DecisionAgent used. Both are set
+        # after Stage 3 (conviction) and before Stage 4 (execution).
+        self._last_market_data: MarketData | None = None
+        self._last_regime: str = "RANGING"
+
     async def run_cycle(self) -> TradeAction:
         """Run one complete analysis cycle through all 4 stages.
 
@@ -143,6 +164,12 @@ class AnalysisPipeline:
         """
         symbol = self._config.symbol
         timeframe = self._config.timeframe
+        cycle_start = time.monotonic()
+
+        # Reset LLM usage counters for this cycle so we can measure
+        # total token consumption across all agent calls.
+        if self._llm_provider is not None:
+            self._llm_provider.reset_usage()
 
         try:
             # ── STAGE 1: DATA ──
@@ -198,6 +225,13 @@ class AnalysisPipeline:
 
             # Update regime history
             self._regime.add(conviction.regime, conviction.regime_confidence)
+
+            # Cache for record_trade_open() SL/TP recomputation from
+            # the actual fill price. Set here (after conviction, before
+            # execution) so both are guaranteed available when TraderBot
+            # calls record_trade_open() after a successful fill.
+            self._last_market_data = market_data
+            self._last_regime = conviction.regime
 
             await self._bus.publish(ConvictionScored(
                 source="pipeline",
@@ -265,8 +299,32 @@ class AnalysisPipeline:
                 # live_cycles view (and the QuantDataScientist mining
                 # job that consumes it) never see fake-money fills.
                 "is_shadow": self._is_shadow,
+                "exchange": self._ohlcv._adapter.name() if hasattr(self._ohlcv, "_adapter") else "hyperliquid",
+                "regime": conviction.regime,
+                "mode": self._mode,
             }
+
+            # Stamp LLM usage from the shared provider's accumulators.
+            if self._llm_provider is not None:
+                usage = self._llm_provider.get_usage()
+                cycle_record["llm_input_tokens"] = usage["input_tokens"]
+                cycle_record["llm_output_tokens"] = usage["output_tokens"]
+                cycle_record["llm_cost_usd"] = usage["cost_usd"]
+
+            # Wall-clock cycle duration.
+            cycle_record["duration_ms"] = int(
+                (time.monotonic() - cycle_start) * 1000
+            )
+
             await self._cycle_mem.save_cycle(self._bot_id, cycle_record)
+
+            # Stamp last_cycle_at on the bot row so dedup can prefer
+            # the most-recently-active bot when duplicates exist.
+            if self._bot_repo is not None:
+                try:
+                    await self._bot_repo.update_last_cycle(self._bot_id)
+                except Exception:
+                    logger.debug("Failed to update last_cycle_at", exc_info=True)
 
             # Publish cross-bot signal for directional convictions
             if conviction.direction in ("LONG", "SHORT"):
@@ -500,9 +558,57 @@ class AnalysisPipeline:
                 f"({entry_price!r}) — skipping trade persist"
             )
             return None
-        # tp_price column collapses tp1/tp2 into a single primary level.
-        # Prefer tp1 (the conservative target the executor sells half at).
-        tp_price = action.tp1_price
+
+        # ── RECOMPUTE SL/TP from actual fill price ──
+        # DecisionAgent computed SL/TP using the last candle's close,
+        # but the fill price may differ. For SHORT trades where price
+        # dropped between candle close and fill, the SL becomes wider
+        # and TP narrower — producing RR ratios of 0.52–0.97 when the
+        # profile targets 1.0–1.5. Recompute with the same ATR, profile,
+        # and swing levels but anchored to the actual fill price.
+        if self._last_market_data is not None:
+            try:
+                atr = float(self._last_market_data.indicators.get("atr", 0))
+                if atr > 0:
+                    base_profile = DEFAULT_PROFILES.get(timeframe)
+                    if base_profile is None:
+                        base_profile = DEFAULT_PROFILES["1h"]
+                    vol_pct = float(
+                        self._last_market_data.indicators.get(
+                            "volatility_percentile", 50.0
+                        )
+                    )
+                    profile = get_dynamic_profile(
+                        base_profile, self._last_regime, vol_pct
+                    )
+                    sl_tp = compute_sl_tp(
+                        entry_price=float(entry_price),
+                        direction=direction,
+                        atr=atr,
+                        profile=profile,
+                        swing_highs=self._last_market_data.swing_highs,
+                        swing_lows=self._last_market_data.swing_lows,
+                    )
+                    action.sl_price = sl_tp["sl_price"]
+                    action.tp1_price = sl_tp["tp1_price"]
+                    action.tp2_price = sl_tp["tp2_price"]
+                    action.rr_ratio = sl_tp["rr_ratio"]
+            except Exception:
+                logger.warning(
+                    f"[{symbol}] record_trade_open: SL/TP recomputation "
+                    f"from fill price failed — using DecisionAgent's "
+                    f"original levels",
+                    exc_info=True,
+                )
+
+        # Shadow mode: use tp2 (full RR from profile) since there are
+        # no partial exits — the position stays open until the full
+        # target or SL is hit. Live mode uses tp1 (1:1 RR — the level
+        # where 50% of the position is closed).
+        if self._is_shadow:
+            tp_price = action.tp2_price or action.tp1_price
+        else:
+            tp_price = action.tp1_price
 
         trade_id = str(uuid4())
         trade_row = {
@@ -521,6 +627,14 @@ class AnalysisPipeline:
             "status": "open",
             "is_shadow": True,
             "engine_version": ENGINE_VERSION,
+            "tp2_price": float(action.tp2_price) if action.tp2_price else None,
+            "atr_multiplier": float(action.atr_multiplier) if action.atr_multiplier else None,
+            "risk_weight": float(action.risk_weight) if action.risk_weight else None,
+            "regime": self._last_regime,
+            "instrument_type": "perpetual",
+            "exchange": self._ohlcv._adapter.name() if hasattr(self._ohlcv, "_adapter") else "hyperliquid",
+            "leverage": None,
+            "margin_type": "cross",
         }
 
         try:

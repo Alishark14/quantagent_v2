@@ -235,9 +235,12 @@ class PostgresTradeRepository(TradeRepository):
                    (id, user_id, bot_id, symbol, timeframe, direction,
                     entry_price, exit_price, size, pnl, r_multiple,
                     entry_time, exit_time, exit_reason, conviction_score,
-                    engine_version, status, is_shadow, sl_price, tp_price)
+                    engine_version, status, is_shadow, sl_price, tp_price,
+                    tp2_price, atr_multiplier, risk_weight, regime,
+                    instrument_type, exchange, leverage, margin_type)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                           $12, $13, $14, $15, $16, $17, $18, $19, $20)""",
+                           $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                           $21, $22, $23, $24, $25, $26, $27, $28)""",
                 trade_id,
                 trade["user_id"],
                 trade["bot_id"],
@@ -258,6 +261,14 @@ class PostgresTradeRepository(TradeRepository):
                 bool(trade.get("is_shadow", False)),
                 trade.get("sl_price"),
                 trade.get("tp_price"),
+                trade.get("tp2_price"),
+                trade.get("atr_multiplier"),
+                trade.get("risk_weight"),
+                trade.get("regime"),
+                trade.get("instrument_type", "perpetual"),
+                trade.get("exchange", "hyperliquid"),
+                trade.get("leverage"),
+                trade.get("margin_type", "cross"),
             )
         return trade_id
 
@@ -355,8 +366,10 @@ class PostgresCycleRepository(CycleRepository):
                 """INSERT INTO cycles
                    (id, bot_id, symbol, timeframe, timestamp,
                     indicators_json, signals_json, conviction_json,
-                    action, conviction_score, is_shadow)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                    action, conviction_score, is_shadow,
+                    llm_input_tokens, llm_output_tokens, llm_cost_usd,
+                    duration_ms, exchange, regime, mode)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)""",
                 cycle_id,
                 cycle["bot_id"],
                 cycle["symbol"],
@@ -368,6 +381,13 @@ class PostgresCycleRepository(CycleRepository):
                 cycle.get("action"),
                 cycle.get("conviction_score"),
                 bool(cycle.get("is_shadow", False)),
+                cycle.get("llm_input_tokens"),
+                cycle.get("llm_output_tokens"),
+                cycle.get("llm_cost_usd"),
+                cycle.get("duration_ms"),
+                cycle.get("exchange", "hyperliquid"),
+                cycle.get("regime"),
+                cycle.get("mode", "live"),
             )
         return cycle_id
 
@@ -472,8 +492,9 @@ class PostgresBotRepository(BotRepository):
             await conn.execute(
                 """INSERT INTO bots
                    (id, user_id, symbol, timeframe, exchange, status,
-                    config_json, created_at, last_health, is_shadow, mode)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                    config_json, created_at, last_health, is_shadow, mode,
+                    instrument_type)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
                 bot_id,
                 bot["user_id"],
                 bot["symbol"],
@@ -485,6 +506,7 @@ class PostgresBotRepository(BotRepository):
                 None,
                 is_shadow,
                 mode,
+                bot.get("instrument_type", "perpetual"),
             )
         return bot_id
 
@@ -532,7 +554,7 @@ class PostgresBotRepository(BotRepository):
     async def get_active_bots_by_mode(self, mode: str) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM bots WHERE status = $1 AND mode = $2",
+                "SELECT * FROM bots WHERE status = $1 AND mode = $2 AND is_active = TRUE",
                 "active", mode,
             )
         results = [_record_to_dict(r) for r in rows]
@@ -548,6 +570,22 @@ class PostgresBotRepository(BotRepository):
             result = await conn.execute(
                 "UPDATE bots SET last_health = $1 WHERE id = $2",
                 json.dumps(health), bot_id,
+            )
+            return result != "UPDATE 0"
+
+    async def deactivate_bot(self, bot_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE bots SET is_active = FALSE, deactivated_at = NOW() WHERE id = $1",
+                bot_id,
+            )
+            return result != "UPDATE 0"
+
+    async def update_last_cycle(self, bot_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE bots SET last_cycle_at = NOW() WHERE id = $1",
+                bot_id,
             )
             return result != "UPDATE 0"
 

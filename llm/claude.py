@@ -76,9 +76,11 @@ class ClaudeProvider(LLMProvider):
         self,
         api_key: str,
         model: str = "claude-sonnet-4-20250514",
+        llm_call_repo=None,
     ) -> None:
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.model = model
+        self._llm_call_repo = llm_call_repo
 
     def _build_system(self, system_prompt: str, cache: bool) -> list[dict]:
         block: dict = {"type": "text", "text": system_prompt}
@@ -201,6 +203,27 @@ class ClaudeProvider(LLMProvider):
                     response=llm_response,
                     temperature=temperature,
                 )
+
+                self._accumulate_usage(llm_response)
+
+                # Fire-and-forget: persist to llm_calls table for analytics.
+                if self._llm_call_repo is not None:
+                    try:
+                        from uuid import uuid4
+                        from datetime import datetime, timezone
+                        await self._llm_call_repo.insert_call({
+                            "id": str(uuid4()),
+                            "agent_name": agent_name,
+                            "model": self.model,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "cost_usd": cost,
+                            "latency_ms": int(elapsed_ms),
+                            "cache_hit": cached > 0,
+                        })
+                    except Exception:
+                        logger.debug("LLM call record insert failed", exc_info=True)
 
                 return llm_response
 

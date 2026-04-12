@@ -283,6 +283,9 @@ def _make_bot_factory(
             # don't need this path because their SL/TP orders live on
             # the exchange.
             trade_repo=repos.trades if shadow_mode else None,
+            llm_provider=llm_provider,
+            bot_repo=repos.bots,
+            mode=factory_mode,
         )
 
         return TraderBot(
@@ -302,6 +305,83 @@ def _make_bot_factory(
     factory.commodity_provider = _shared_commodity_provider  # type: ignore[attr-defined]
     factory.equity_provider = _shared_equity_provider  # type: ignore[attr-defined]
     return factory
+
+
+# Dead symbols that should never run — removed from the exchange or
+# were test entries that never had valid data.
+_DEAD_SYMBOLS: frozenset[str] = frozenset({
+    "SNDK-USDC", "USA500-USDC", "XYZ100-USDC",
+})
+
+
+def _deduplicate_bots(
+    bots: list[dict],
+    preferred_timeframe: str = "1h",
+) -> list[dict]:
+    """Keep one bot per symbol, preferring the configured timeframe.
+
+    If the DB has multiple bot entries for the same symbol (e.g. 30m,
+    1h, 4h from prior runs), the runner would register all of them.
+    Only one sentinel is created per symbol, but every bot spawns its
+    own scheduled loop — the extras hit BotManager's per-symbol
+    concurrency limit and silently block the real bot.
+
+    This guard deduplicates at startup so duplicates never reach the
+    runner. It also filters out dead symbols.
+    """
+    _logger = logging.getLogger("quantagent")
+
+    # Filter dead symbols first
+    live: list[dict] = []
+    for b in bots:
+        sym = b.get("symbol", "")
+        if sym in _DEAD_SYMBOLS:
+            _logger.warning(
+                f"Filtering dead symbol {sym} (bot {b.get('id', '?')})"
+            )
+        else:
+            live.append(b)
+
+    # Group by symbol
+    by_symbol: dict[str, list[dict]] = {}
+    for b in live:
+        sym = b.get("symbol", "?")
+        by_symbol.setdefault(sym, []).append(b)
+
+    result: list[dict] = []
+    for sym, group in by_symbol.items():
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+
+        # Multiple bots for the same symbol — pick the preferred TF,
+        # then the most recently active if still ambiguous.
+        preferred = [b for b in group if b.get("timeframe") == preferred_timeframe]
+        candidates = preferred if preferred else group
+        # Sort by last_cycle_at descending (None sorts last)
+        candidates.sort(
+            key=lambda b: b.get("last_cycle_at") or "",
+            reverse=True,
+        )
+        keeper = candidates[0]
+        result.append(keeper)
+
+        dropped = [b for b in group if b is not keeper]
+        dropped_ids = ", ".join(
+            f"{b.get('id', '?')}({b.get('timeframe', '?')})" for b in dropped
+        )
+        _logger.warning(
+            f"Duplicate bots for {sym}, keeping {keeper.get('id', '?')}"
+            f"({keeper.get('timeframe', '?')}), dropping: {dropped_ids}"
+        )
+
+    if len(result) < len(bots):
+        _logger.info(
+            f"Bot dedup: {len(bots)} loaded → {len(result)} after "
+            f"dedup ({len(bots) - len(result)} removed)"
+        )
+
+    return result
 
 
 async def _run_server() -> None:
@@ -371,7 +451,8 @@ async def _run_server() -> None:
             "ANTHROPIC_API_KEY not set — bot_factory will fail at first "
             "spawn. Set it in .env before running live."
         )
-    llm_provider = ClaudeProvider(api_key=api_key) if api_key else None
+    llm_call_repo = getattr(repos, "llm_calls", None)
+    llm_provider = ClaudeProvider(api_key=api_key, llm_call_repo=llm_call_repo) if api_key else None
 
     # ── Adapter factory (per-bot mode-aware) ──
     def adapter_factory(exchange: str, mode: str = "live"):
@@ -518,6 +599,7 @@ async def _run_server() -> None:
     # `bot_mode` was resolved by the shadow/paper detection block above.
     active_bots = await repos.bots.get_active_bots_by_mode(bot_mode)
     logger.info(f"Loaded {len(active_bots)} {bot_mode} bots from database")
+    active_bots = _deduplicate_bots(active_bots)
     await runner.start_with_bots(active_bots)
 
     # ── Start PriceFeed stack (needs symbol list from active_bots) ──

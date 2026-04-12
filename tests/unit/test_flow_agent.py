@@ -559,12 +559,12 @@ class TestCryptoFlowProviderLookback:
     def test_default_lookback_is_two_hours(self) -> None:
         provider = CryptoFlowProvider()
         assert provider.lookback_seconds == 7_200
-        assert provider._buffer_maxlen == 240
+        assert provider._buffer_maxlen == max(600, 7_200)
 
     def test_explicit_lookback_in_constructor(self) -> None:
         provider = CryptoFlowProvider(lookback_seconds=3_600)
         assert provider.lookback_seconds == 3_600
-        assert provider._buffer_maxlen == 120
+        assert provider._buffer_maxlen == max(600, 3_600)
 
     def test_set_lookback_for_known_timeframes(self) -> None:
         provider = CryptoFlowProvider()
@@ -577,7 +577,7 @@ class TestCryptoFlowProviderLookback:
         ]:
             provider.set_lookback_for_timeframe(tf)
             assert provider.lookback_seconds == expected
-            assert provider._buffer_maxlen == max(60, expected // 30)
+            assert provider._buffer_maxlen == max(600, expected)
 
     def test_set_lookback_for_unknown_timeframe_falls_back(self) -> None:
         provider = CryptoFlowProvider()

@@ -144,7 +144,7 @@ def bus() -> InProcessBus:
 class TestLongGates:
     async def test_long_sl_hit(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade(direction="LONG", entry=100, sl=95, tp=110)]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -161,7 +161,7 @@ class TestLongGates:
 
     async def test_long_tp_hit(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade(direction="LONG", entry=100, sl=95, tp=110)]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -179,7 +179,7 @@ class TestLongGates:
 class TestShortGates:
     async def test_short_sl_hit(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade(direction="SHORT", entry=100, sl=105, tp=90)]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -195,7 +195,7 @@ class TestShortGates:
 
     async def test_short_tp_hit(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade(direction="SHORT", entry=100, sl=105, tp=90)]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -214,7 +214,7 @@ class TestNoOpPaths:
     async def test_no_trades_for_symbol_is_fast_path(self, bus: InProcessBus) -> None:
         # Empty repo. Subscribe but never register any symbol.
         repo = FakeTradeRepo({})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         await mgr.start()
         # Initial start() refresh hits zero symbols (none registered).
         initial_get_calls = len(repo.get_calls)
@@ -230,7 +230,7 @@ class TestNoOpPaths:
 
     async def test_price_between_sl_and_tp_no_action(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade(direction="LONG", entry=100, sl=95, tp=110)]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -254,7 +254,7 @@ class TestTradeClosedEvent:
         bus.subscribe(TradeClosed, rec)
 
         repo = FakeTradeRepo({"BTC-USDC": [_trade(direction="LONG", entry=100, sl=95, tp=110)]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -291,28 +291,32 @@ class TestForwardMaxR:
         repo = FakeTradeRepo(
             {"BTC-USDC": [_trade(direction="LONG", entry=100, sl=95, tp=110, forward_max_r=None)]}
         )
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
         await _publish_tick(bus, "BTC-USDC", 102.0)
         # No DB writes mid-trade — only in-memory.
-        assert repo.update_calls == []
+        fmr_updates = [u for u in repo.update_calls if "forward_max_r" in u["updates"]]
+        assert fmr_updates == []
 
         await _publish_tick(bus, "BTC-USDC", 108.0)
-        assert repo.update_calls == []
+        fmr_updates = [u for u in repo.update_calls if "forward_max_r" in u["updates"]]
+        assert fmr_updates == []
 
         await _publish_tick(bus, "BTC-USDC", 105.0)
-        assert repo.update_calls == []
+        fmr_updates = [u for u in repo.update_calls if "forward_max_r" in u["updates"]]
+        assert fmr_updates == []
 
         # Trip TP — close + flush forward_max_r in one shot.
         await _publish_tick(bus, "BTC-USDC", 110.0)
 
         assert len(repo.close_calls) == 1
         # Final HWM = 2.0 (the TP price itself).
-        assert len(repo.update_calls) == 1
-        assert repo.update_calls[0]["trade_id"] == "t1"
-        assert repo.update_calls[0]["updates"]["forward_max_r"] == pytest.approx(2.0)
+        fmr_updates = [u for u in repo.update_calls if "forward_max_r" in u["updates"]]
+        assert len(fmr_updates) == 1
+        assert fmr_updates[0]["trade_id"] == "t1"
+        assert fmr_updates[0]["updates"]["forward_max_r"] == pytest.approx(2.0)
         await mgr.stop()
 
     async def test_flush_skipped_when_prior_persisted_already_higher(
@@ -324,7 +328,7 @@ class TestForwardMaxR:
         repo = FakeTradeRepo(
             {"BTC-USDC": [_trade(direction="SHORT", entry=100, sl=105, tp=90, forward_max_r=5.0)]}
         )
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
 
@@ -332,8 +336,9 @@ class TestForwardMaxR:
         await _publish_tick(bus, "BTC-USDC", 90.0)
 
         assert len(repo.close_calls) == 1
-        # Prior persisted (5.0) is higher than new in-memory HWM — no update_trade call.
-        assert repo.update_calls == []
+        # Prior persisted (5.0) is higher than new in-memory HWM — no forward_max_r update.
+        fmr_updates = [u for u in repo.update_calls if "forward_max_r" in u["updates"]]
+        assert fmr_updates == []
         await mgr.stop()
 
 
@@ -351,7 +356,7 @@ class TestPeriodicRefresh:
         repo = FakeTradeRepo(
             {"BTC-USDC": [_trade(id="t1", direction="LONG", entry=100, sl=50, tp=150)]}
         )
-        mgr = SLTPMonitor(bus, repo, refresh_interval=0.0)  # always refresh
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0, refresh_interval=0.0)  # always refresh
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
         assert mgr.open_trade_count("BTC-USDC") == 1
@@ -378,7 +383,7 @@ class TestPeriodicRefresh:
 
     async def test_refresh_skipped_within_interval(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade()]})
-        mgr = SLTPMonitor(bus, repo, refresh_interval=999.0)  # never refresh again
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0, refresh_interval=999.0)  # never refresh again
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
         baseline_get_calls = len(repo.get_calls)
@@ -400,7 +405,7 @@ class TestPeriodicRefresh:
 class TestLifecycle:
     async def test_start_is_idempotent(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         await mgr.start()
         await mgr.start()
         assert mgr.is_running() is True
@@ -409,7 +414,7 @@ class TestLifecycle:
 
     async def test_stop_unsubscribes(self, bus: InProcessBus) -> None:
         repo = FakeTradeRepo({"BTC-USDC": [_trade()]})
-        mgr = SLTPMonitor(bus, repo)
+        mgr = SLTPMonitor(bus, repo, taker_fee_rate=0.0)
         mgr.register_symbol("BTC-USDC")
         await mgr.start()
         await mgr.stop()
