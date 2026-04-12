@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -33,6 +34,35 @@ class FlowOutput:
     gex_regime: str | None  # "POSITIVE_GAMMA" | "NEGATIVE_GAMMA" | None
     gex_flip_level: float | None
     data_richness: str  # "FULL" | "PARTIAL" | "MINIMAL"
+    # Options-derived fields (OptionsEnrichment, BTC/ETH only — default
+    # None so live / non-crypto paths that don't run the provider keep
+    # working unchanged). All four follow the same "None when data
+    # unavailable" convention FlowSignalAgent already handles.
+    put_call_ratio: float | None = None    # total put OI / total call OI; >1 = put-heavy
+    dvol: float | None = None              # Deribit DVOL implied-vol index, current
+    dvol_change_24h: float | None = None   # % change in DVOL over 24h
+    skew_25d: float | None = None          # 25-delta put IV − 25-delta call IV
+
+    # COT positioning fields (CommodityFlowProvider — GOLD / SILVER /
+    # WTIOIL / BRENTOIL only). Weekly CFTC Commitment of Traders data.
+    # All default None so crypto / forex / equity paths stay unchanged
+    # and FlowSignalAgent's None guards short-circuit the COT rules.
+    cot_speculator_percentile: float | None = None  # 0-100; >90 = extreme long, <10 = extreme short
+    cot_commercial_net: float | None = None         # raw commercial (Prod_Merc) net position
+    cot_managed_money_net: float | None = None      # raw managed-money net position
+    cot_weekly_change_pct: float | None = None      # week-over-week % change in MM net
+    cot_divergence: float | None = None             # commercial_net − managed_money_net
+    cot_divergence_abs_percentile: float | None = None  # 0-100; top-20% == > 80
+
+    # RegSHO equity-flow fields (EquityFlowProvider — TSLA / NVDA /
+    # GOOGL only). Daily FINRA off-exchange short-volume file.
+    # ``market_open`` is populated for US equity symbols regardless of
+    # whether the file fetch succeeded, so the "outside market hours"
+    # rule can fire even without a FINRA row.
+    short_volume_ratio: float | None = None   # 0.52 = 52% of daily volume was short
+    svr_zscore: float | None = None           # 20-day rolling Z-score
+    svr_trend: str | None = None              # "RISING" | "FALLING" | "STABLE"
+    market_open: bool | None = None           # True when US cash equities are in session
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -161,6 +191,91 @@ class Position:
     entry_price: float
     unrealized_pnl: float
     leverage: float | None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class PriceUpdate:
+    """Real-time price tick from a PriceFeed (trades channel).
+
+    Payload for `PriceUpdated` events emitted by the WebSocket PriceFeed
+    system (Sprint Week 7 — Event-Driven Refactor Phase 1). Consumers
+    like `SLTPMonitor` read `price` on every tick to check open trades
+    against SL/TP levels without REST polling.
+    """
+
+    symbol: str
+    price: float
+    bid: float | None = None
+    ask: float | None = None
+    size: float | None = None  # trade size if from trades channel
+    exchange: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class CandleClose:
+    """Completed OHLCV candle from a PriceFeed.
+
+    Payload for `CandleClosed` events. Emitted when a PriceFeed detects
+    that the previous candle has finalised (the candle channel pushes a
+    new candle with a newer timestamp). Sentinel subscribes to this so
+    readiness computation triggers on candle close instead of a 30s
+    sleep-poll loop.
+    """
+
+    symbol: str
+    timeframe: str  # "1h", "4h", etc.
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    exchange: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))  # candle close time
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class FundingUpdate:
+    """Funding rate snapshot from a PriceFeed.
+
+    Payload for `FundingUpdated` events. Populated from Hyperliquid's
+    `activeAssetCtx` channel so FlowSignalAgent/CryptoFlowProvider read
+    the current funding rate from local memory instead of REST.
+    """
+
+    symbol: str
+    funding_rate: float
+    next_funding_time: datetime | None = None
+    exchange: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class OIUpdate:
+    """Open interest snapshot from a PriceFeed.
+
+    Payload for `OpenInterestUpdated` events. `oi_change_pct` is the
+    delta vs the previous snapshot captured by the PriceFeed and is
+    None on the first observation.
+    """
+
+    symbol: str
+    open_interest: float
+    oi_change_pct: float | None = None  # vs previous snapshot
+    exchange: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
         return asdict(self)

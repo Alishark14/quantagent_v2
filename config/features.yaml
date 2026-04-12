@@ -23,3 +23,4 @@ mcp_overnight_quant: false
 mcp_macro_manager: false
 chat_enabled: false
 paper_trading_mode: true          # Default ON for safety
+price_feed_enabled: false         # WebSocket PriceFeed (Sprint Week 7 — flip to true when ready to test)

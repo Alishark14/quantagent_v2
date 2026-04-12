@@ -73,6 +73,20 @@ class FlowAgent:
             gex_regime=merged.get("gex_regime"),
             gex_flip_level=merged.get("gex_flip_level"),
             data_richness=richness,
+            put_call_ratio=merged.get("put_call_ratio"),
+            dvol=merged.get("dvol"),
+            dvol_change_24h=merged.get("dvol_change_24h"),
+            skew_25d=merged.get("skew_25d"),
+            cot_speculator_percentile=merged.get("cot_speculator_percentile"),
+            cot_commercial_net=merged.get("cot_commercial_net"),
+            cot_managed_money_net=merged.get("cot_managed_money_net"),
+            cot_weekly_change_pct=merged.get("cot_weekly_change_pct"),
+            cot_divergence=merged.get("cot_divergence"),
+            cot_divergence_abs_percentile=merged.get("cot_divergence_abs_percentile"),
+            short_volume_ratio=merged.get("short_volume_ratio"),
+            svr_zscore=merged.get("svr_zscore"),
+            svr_trend=merged.get("svr_trend"),
+            market_open=merged.get("market_open"),
         )
 
     async def fetch_flow(self, symbol: str, adapter: ExchangeAdapter) -> FlowOutput:

@@ -15,6 +15,15 @@
 - **P3 — Low:** Future phase, no urgency
 - **Research:** Added by Research Agent, needs founder review
 
+### Forex Flow Provider (COT + DXY Correlation)
+Priority: Low
+Depends on: CommodityFlowProvider pattern (Block 2)Build a ForexFlowProvider using the same cot_reports library but with the traders_in_financial_futures_fut report type instead of disaggregated_fut. The TFF report covers currency futures (EUR, GBP, JPY, CHF, AUD, CAD) with Dealer, Asset Manager, Leveraged Funds, and Other Reportable categories. Same weekly cadence, same CFTC source, same persistence pattern as CommodityFlowProvider. Additionally compute DXY (US Dollar Index) correlation — when DXY strengthens, risk assets (crypto, commodities) typically weaken. DXY data available free from FRED API (Federal Reserve Economic Data). Not needed until we add forex trading pairs to the engine. Current HIP-3 assets don't include forex.
+
+### WebSocket Real-Time Price Feed for SL/TP Monitoring
+Priority: Medium
+Depends on: Shared adapter fix (immediate), Dashboard WebSocket (Phase 4)
+Current SL/TP monitoring in shadow mode uses Sentinel's 30-second REST poll with high/low candle checks (Option C). This catches most stops but can miss intra-30s wicks that would trigger on the real exchange. For production live trading, implement WebSocket price subscription from Hyperliquid (already specified in ARCHITECTURE.md §8.1). Each trade/tick update feeds into the adapter's SL/TP check for true real-time monitoring. The WebSocket infrastructure also serves the real-time dashboard (§19) and the Sentinel itself (replacing REST polling). Build once, use for all three.
+
 ### Symbol Resolution Layer (exchange-agnostic)
 Priority: Medium
 Depends on: HIP-3 funding fix (immediate)
@@ -29,6 +38,17 @@ resolve(canonical) → exchange_native for all adapter methods. Eliminates
 per-method string manipulation and CCXT symbol format dependency for 
 critical calls. Required before adding IBKR, Alpaca, or Binance trading 
 adapters.
+
+### Scheduled Loop vs Sentinel Cooldown Competition
+Priority: High
+Depends on: Immediate fix (source="scheduled" skip SetupResult)
+The immediate fix prevents scheduled loops from emitting SetupResult, which stops them from escalating Sentinel's threshold and consuming cooldown. But the deeper design tension remains: the scheduled fallback and Sentinel serve overlapping purposes. The scheduled loop guarantees at least one cycle per interval. Sentinel triggers additional cycles when market conditions are interesting. They share the same BotManager spawn path and the same daily budget counter.
+Long-term redesign options:
+
+Separate daily budgets: Sentinel gets 8 triggers/day, scheduled loop is uncapped (it's deterministic cost, not reactive)
+Sentinel-only mode: remove the scheduled fallback entirely once Sentinel threshold is calibrated. If Sentinel never fires in an hour, the market genuinely has no setup — running the pipeline on schedule wastes LLM budget
+Scheduled loop as Sentinel warmup: the scheduled loop only runs during the first 4 hours (OI buffer warmup). After warmup, Sentinel takes over exclusively
+Priority system: Sentinel triggers take priority over scheduled. If Sentinel fired in the last interval, skip the scheduled run
 
 ---
 

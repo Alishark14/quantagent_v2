@@ -13,10 +13,14 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 from engine.types import (
+    CandleClose,
     ConvictionOutput,
+    FundingUpdate,
     MarketData,
+    OIUpdate,
     OrderResult,
     Position,
+    PriceUpdate,
     SignalOutput,
     TradeAction,
 )
@@ -210,6 +214,44 @@ class SetupResult(Event):
     action: str = ""  # literal TradeAction.action
     bot_id: str = ""
     conviction_score: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# PriceFeed events (Sprint Week 7 — Event-Driven Refactor Phase 1)
+#
+# Emitted by `engine/data/price_feed/*` implementations. Each event wraps
+# a payload dataclass from `engine/types.py`. Subscribers use the event
+# class for class-based dispatch, matching the existing pattern used by
+# DataReady / SignalsReady / TradeClosed.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PriceUpdated(Event):
+    """Emitted by a PriceFeed on every tick (trades channel)."""
+
+    update: PriceUpdate = field(default_factory=lambda: None)  # type: ignore[arg-type]
+
+
+@dataclass
+class CandleClosed(Event):
+    """Emitted by a PriceFeed when a candle finalises."""
+
+    candle: CandleClose = field(default_factory=lambda: None)  # type: ignore[arg-type]
+
+
+@dataclass
+class FundingUpdated(Event):
+    """Emitted by a PriceFeed on funding rate changes."""
+
+    update: FundingUpdate = field(default_factory=lambda: None)  # type: ignore[arg-type]
+
+
+@dataclass
+class OpenInterestUpdated(Event):
+    """Emitted by a PriceFeed on open interest changes."""
+
+    update: OIUpdate = field(default_factory=lambda: None)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

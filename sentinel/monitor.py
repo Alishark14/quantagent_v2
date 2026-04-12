@@ -64,7 +64,7 @@ from pathlib import Path
 
 from engine.data.indicators import compute_all_indicators
 from engine.data.swing_detection import find_swing_highs, find_swing_lows
-from engine.events import EventBus, SetupDetected, SetupResult
+from engine.events import CandleClosed, EventBus, SetupDetected, SetupResult
 from exchanges.base import ExchangeAdapter
 from mcp.macro_regime.agent import load_macro_regime
 from sentinel.conditions import ReadinessScorer
@@ -117,6 +117,7 @@ class SentinelMonitor:
         max_escalation: float = MAX_ESCALATION,
         skip_cooldown_seconds: int = SKIP_COOLDOWN_SECONDS,
         trade_repo=None,
+        price_feed=None,
     ) -> None:
         self._adapter = adapter
         self._bus = event_bus
@@ -170,6 +171,24 @@ class SentinelMonitor:
         # in shadow mode by BotRunner.
         self._trade_repo = trade_repo
 
+        # Sprint Week 7 Task 5: when an external SLTPMonitor is wired up
+        # by main.py, it owns shadow SL/TP resolution at tick-level via
+        # the PriceUpdated event. Setting this flag to True (via
+        # ``set_sl_tp_monitor_active``) makes the Sentinel skip its own
+        # candle-close ``_check_shadow_sl_tp`` poll so the two paths
+        # never resolve the same trade twice. The flag is opt-in to keep
+        # the existing test suite + non-WebSocket deployments working
+        # exactly as before.
+        self._sl_tp_monitor_active: bool = False
+
+        # Sprint Week 7 Task 6: optional PriceFeed for event-driven mode.
+        # When set, ``run()`` subscribes to ``CandleClosed`` events and
+        # reads candle history from PriceFeed memory (zero REST calls);
+        # the sleep-poll loop becomes a lightweight keepalive that only
+        # handles day-boundary resets. ``None`` preserves the legacy REST
+        # poll behaviour for all existing call sites and tests.
+        self._price_feed = price_feed
+
         self._scorer = ReadinessScorer()
         self._last_trigger: datetime | None = None
         self._daily_trigger_count: int = 0
@@ -203,6 +222,18 @@ class SentinelMonitor:
         in response to SetupResult events.
         """
         return self._active_cooldown_seconds
+
+    def set_sl_tp_monitor_active(self, active: bool) -> None:
+        """Sprint Week 7 Task 5: opt out of the candle-close shadow SL/TP poll.
+
+        Called by ``main.py`` when an external ``SLTPMonitor`` is wired
+        to ``PriceUpdated`` events — its tick-level resolution races with
+        the legacy candle-close poll, so the Sentinel skips
+        ``_check_shadow_sl_tp`` while the flag is True. Default False
+        keeps the legacy path active for non-WebSocket deployments and
+        for the existing test suite.
+        """
+        self._sl_tp_monitor_active = bool(active)
 
     def subscribe_results(self) -> None:
         """Subscribe this monitor's escalation handler to SetupResult events.
@@ -271,14 +302,42 @@ class SentinelMonitor:
         )
 
     async def run(self) -> None:
-        """Run the Sentinel loop until stopped."""
+        """Run the Sentinel loop until stopped.
+
+        Two modes, chosen automatically at startup:
+
+        **Event-driven** (``self._price_feed is not None``):
+          Subscribes to ``CandleClosed`` events from the WebSocket
+          PriceFeed. Each candle close triggers ``_on_candle_close``
+          which reads candle history from PriceFeed memory (zero REST
+          calls) and runs the full readiness computation. The run loop
+          becomes a lightweight keepalive that handles day-boundary
+          resets.
+
+        **REST-poll** (``self._price_feed is None`` — back-compat):
+          The existing ``sleep(check_interval)`` + ``_check_once()`` loop
+          that fetches candles via ``adapter.fetch_ohlcv()``. All
+          existing tests exercise this path.
+        """
         self._running = True
+        mode = "event-driven" if self._price_feed is not None else "REST-poll"
         logger.info(
-            f"Sentinel started: {self._symbol}/{self._timeframe} "
-            f"(interval={self._check_interval}s, base_threshold={self._base_threshold}, "
+            f"Sentinel started: {self._symbol}/{self._timeframe} ({mode}, "
+            f"interval={self._check_interval}s, base_threshold={self._base_threshold}, "
             f"cooldown={self._candle_cooldown_seconds}s, budget={self._daily_budget}/day)"
         )
 
+        if self._price_feed is not None:
+            self._bus.subscribe(CandleClosed, self._on_candle_close)
+            while self._running:
+                now = self._clock()
+                if now.day != self._current_day:
+                    self._current_day = now.day
+                    self._daily_trigger_count = 0
+                await asyncio.sleep(self._check_interval)
+            return
+
+        # Legacy REST-poll mode.
         while self._running:
             try:
                 await self._check_once()
@@ -290,7 +349,34 @@ class SentinelMonitor:
     def stop(self) -> None:
         """Stop the Sentinel loop."""
         self._running = False
+        if self._price_feed is not None:
+            try:
+                self._bus.unsubscribe(CandleClosed, self._on_candle_close)
+            except Exception:
+                pass
         logger.info(f"Sentinel stopped: {self._symbol}")
+
+    async def _on_candle_close(self, event: CandleClosed) -> None:
+        """Event-driven trigger: runs readiness computation on candle close.
+
+        Only fires when ``price_feed`` is wired. Reads candle history from
+        PriceFeed memory (zero REST calls) and delegates to the same
+        ``_check_once`` method that the REST-poll loop uses, passing the
+        pre-fetched candles so the adapter is never touched.
+        """
+        if event.candle is None or event.candle.symbol != self._symbol:
+            return
+        candles = self._price_feed.get_candle_history(
+            self._symbol, count=self._candle_window
+        )
+        if not candles:
+            return
+        try:
+            await self._check_once(candles=candles)
+        except Exception:
+            logger.exception(
+                f"Sentinel: event-driven check failed for {self._symbol}"
+            )
 
     async def check_once(self) -> tuple[float, list]:
         """Run a single readiness check. Returns (score, conditions).
@@ -299,18 +385,27 @@ class SentinelMonitor:
         """
         return await self._check_once()
 
-    async def _check_once(self) -> tuple[float, list]:
-        """Internal: fetch data, compute indicators, score readiness."""
+    async def _check_once(
+        self, *, candles: list[dict] | None = None
+    ) -> tuple[float, list]:
+        """Internal: fetch data, compute indicators, score readiness.
+
+        ``candles`` may be passed by ``_on_candle_close`` (event-driven
+        mode, pre-fetched from PriceFeed memory). When ``None`` the
+        method falls back to ``adapter.fetch_ohlcv()`` — the legacy
+        REST-poll path used by all existing tests.
+        """
         # Reset daily counter at day boundary
         now = datetime.now(timezone.utc)
         if now.day != self._current_day:
             self._current_day = now.day
             self._daily_trigger_count = 0
 
-        # Fetch candles
-        candles = await self._adapter.fetch_ohlcv(
-            self._symbol, self._timeframe, limit=self._candle_window,
-        )
+        # Fetch candles — from PriceFeed memory (event-driven) or REST
+        if candles is None:
+            candles = await self._adapter.fetch_ohlcv(
+                self._symbol, self._timeframe, limit=self._candle_window,
+            )
         # Indicator computation (compute_all_indicators) crashes on
         # short windows because MACD's slow-EMA needs ~26 bars and the
         # ADX/ATR smoothers want ~14 each. 35 gives a safe margin and
@@ -327,7 +422,13 @@ class SentinelMonitor:
         # we wipe any escalation state. The first observation initializes
         # the marker without resetting (a fresh-start Sentinel shouldn't
         # immediately clear escalation state it never built).
-        latest_candle_ts = int(candles[-1]["timestamp"])
+        # PriceFeed candles carry ``datetime`` timestamps while REST
+        # candles carry ``int`` ms — normalise to int ms for comparison.
+        raw_ts = candles[-1]["timestamp"]
+        if isinstance(raw_ts, datetime):
+            latest_candle_ts = int(raw_ts.timestamp() * 1000)
+        else:
+            latest_candle_ts = int(raw_ts)
         if self._last_candle_ts is None:
             self._last_candle_ts = latest_candle_ts
         elif latest_candle_ts > self._last_candle_ts:
@@ -351,7 +452,10 @@ class SentinelMonitor:
         # Sentinel polls the trades table for opens on this symbol and
         # closes any whose SL or TP was breached by the latest candle's
         # high/low. No-op when no trade_repo is wired (live + paper).
-        if self._trade_repo is not None:
+        # Sprint Week 7 Task 5: also skipped when an external SLTPMonitor
+        # is active — it owns tick-level SL/TP resolution via PriceUpdated
+        # events and would otherwise race with this candle-close poll.
+        if self._trade_repo is not None and not self._sl_tp_monitor_active:
             try:
                 await self._check_shadow_sl_tp(candles[-1])
             except Exception:

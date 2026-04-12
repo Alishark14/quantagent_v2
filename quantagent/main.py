@@ -79,7 +79,10 @@ def _make_bot_factory(
     from engine.config import FeatureFlags, TradingConfig
     from engine.conviction.agent import ConvictionAgent
     from engine.data.flow import FlowAgent, FlowSignalAgent
+    from engine.data.flow.commodity import CommodityFlowProvider
     from engine.data.flow.crypto import CryptoFlowProvider
+    from engine.data.flow.equity import EquityFlowProvider
+    from engine.data.flow.options import OptionsEnrichment
     from engine.data.ohlcv import OHLCVFetcher
     from engine.execution.agent import DecisionAgent
     from engine.execution.executor import Executor
@@ -143,6 +146,29 @@ def _make_bot_factory(
     # lookbacks. For now all production bots are 1h.
     _shared_flow_provider.set_lookback_for_timeframe("1h")
 
+    # OptionsEnrichment is a second shared FlowProvider for BTC / ETH
+    # only (Deribit does not list public options for altcoins — the
+    # provider short-circuits for every other symbol). Shared across
+    # spawns so its 15-minute Deribit cache persists instead of paying
+    # fresh network round-trips every hourly TraderBot.
+    _shared_options_provider = OptionsEnrichment()
+
+    # CommodityFlowProvider pulls weekly CFTC COT positioning for our
+    # HIP-3 commodity universe (gold / silver / WTI / brent) and
+    # returns an empty dict for every other symbol. Wired to the
+    # ``cot_cache`` repo so the 52-week rolling history survives
+    # restarts; warmup_from_repo is awaited by _run_server before any
+    # bot spawns.
+    _cot_repo = getattr(repos, "cot_cache", None)
+    _shared_commodity_provider = CommodityFlowProvider(cot_repo=_cot_repo)
+
+    # EquityFlowProvider pulls daily FINRA RegSHO short-volume files
+    # for our HIP-3 equity universe (TSLA / NVDA / GOOGL) and returns
+    # an empty dict for every other symbol. Wired to the regsho_cache
+    # table so the 20-day rolling Z-score window survives restarts.
+    _regsho_repo = getattr(repos, "regsho_cache", None)
+    _shared_equity_provider = EquityFlowProvider(regsho_repo=_regsho_repo)
+
     def factory(
         symbol: str,
         bot_id: str,
@@ -176,7 +202,14 @@ def _make_bot_factory(
 
         # Data layer
         fetcher = OHLCVFetcher(adapter, config)
-        flow_agent = FlowAgent([_shared_flow_provider])
+        flow_agent = FlowAgent(
+            [
+                _shared_flow_provider,
+                _shared_options_provider,
+                _shared_commodity_provider,
+                _shared_equity_provider,
+            ]
+        )
 
         # Signal layer — register every enabled agent. The four
         # currently-shipped agents are gated by their feature flags so
@@ -265,6 +298,9 @@ def _make_bot_factory(
     # hourly cleanup loop without having to thread either the provider
     # or the repo through the BotRunner.
     factory.flow_provider = _shared_flow_provider  # type: ignore[attr-defined]
+    factory.options_provider = _shared_options_provider  # type: ignore[attr-defined]
+    factory.commodity_provider = _shared_commodity_provider  # type: ignore[attr-defined]
+    factory.equity_provider = _shared_equity_provider  # type: ignore[attr-defined]
     return factory
 
 
@@ -372,6 +408,28 @@ async def _run_server() -> None:
     except Exception:
         logger.exception("CryptoFlowProvider warmup failed; continuing")
 
+    # Warm the shared CommodityFlowProvider from the cot_cache table
+    # so the 52-week CFTC history is available on the first analysis
+    # cycle after restart. Any failure is non-fatal — the provider
+    # falls back to the next live cot_reports pull.
+    try:
+        cot_warmed = await bot_factory.commodity_provider.warmup_from_repo()
+        logger.info(
+            f"CommodityFlowProvider warmup loaded {cot_warmed} COT snapshots"
+        )
+    except Exception:
+        logger.exception("CommodityFlowProvider warmup failed; continuing")
+
+    # Warm the shared EquityFlowProvider from the regsho_cache table
+    # so the 20-day Z-score window is live on cycle #1 after restart.
+    try:
+        regsho_warmed = await bot_factory.equity_provider.warmup_from_repo()
+        logger.info(
+            f"EquityFlowProvider warmup loaded {regsho_warmed} RegSHO snapshots"
+        )
+    except Exception:
+        logger.exception("EquityFlowProvider warmup failed; continuing")
+
     # ── Hourly cleanup loop for the oi_snapshots table.
     # Keeps the table small by deleting anything older than 24h. Runs
     # in the background; cancelled on shutdown via shutdown_event.
@@ -395,6 +453,51 @@ async def _run_server() -> None:
         bot_factory=bot_factory,
     )
 
+    # ── PriceFeed initialization (Sprint Week 7 Task 7) ──
+    # Gated by PRICE_FEED_ENABLED env var (feature flag). When active,
+    # creates a HyperliquidPriceFeed (WebSocket + REST bootstrap),
+    # wraps it in a RESTFallbackManager for resilience, and starts an
+    # SLTPMonitor for tick-level shadow SL/TP. The PriceFeed reference
+    # is passed through BotRunner → SentinelMonitor so every Sentinel
+    # switches from REST-poll to event-driven mode (zero REST overhead).
+    # When the flag is off, everything stays on the legacy REST path.
+    price_feed_enabled = (
+        os.environ.get("PRICE_FEED_ENABLED", "false").lower() == "true"
+        and shadow_mode  # only shadow mode for now; live/paper use exchange SL/TP
+    )
+    price_feed = None
+    fallback_manager = None
+    sl_tp_monitor = None
+
+    if price_feed_enabled:
+        from engine.data.price_feed import HyperliquidPriceFeed, RESTFallbackManager
+        from engine.sl_tp_monitor import SLTPMonitor
+
+        testnet = paper_mode  # shadow runs against mainnet data
+        # Bootstrap adapter for REST history seeding — public OHLCV, no signing.
+        bootstrap_adapter = adapter_factory("hyperliquid", mode="live")
+
+        price_feed = HyperliquidPriceFeed(
+            event_bus=event_bus,
+            testnet=testnet,
+            candle_timeframe="1h",
+            bootstrap_adapter=bootstrap_adapter,
+        )
+
+        fallback_manager = RESTFallbackManager(
+            price_feed=price_feed,
+            adapter=bootstrap_adapter,
+            event_bus=event_bus,
+        )
+
+        sl_tp_monitor = SLTPMonitor(
+            event_bus=event_bus,
+            trade_repo=repos.trades,
+            is_shadow=True,
+        )
+
+        logger.info("PriceFeed stack initialized (PRICE_FEED_ENABLED=true)")
+
     # ── Initialize BotRunner ──
     from quantagent.runner import BotRunner
 
@@ -405,6 +508,7 @@ async def _run_server() -> None:
         event_bus=event_bus,
         bot_manager=bot_manager,
         shadow_mode=shadow_mode,
+        price_feed=price_feed,
     )
 
     # Load active bots from DB filtered by mode so the runner restores
@@ -415,6 +519,33 @@ async def _run_server() -> None:
     active_bots = await repos.bots.get_active_bots_by_mode(bot_mode)
     logger.info(f"Loaded {len(active_bots)} {bot_mode} bots from database")
     await runner.start_with_bots(active_bots)
+
+    # ── Start PriceFeed stack (needs symbol list from active_bots) ──
+    if price_feed_enabled and price_feed is not None:
+        shadow_symbols = list({b.get("symbol", "BTC-USDC") for b in active_bots})
+        try:
+            await fallback_manager.start(symbols=shadow_symbols)
+            for sym in shadow_symbols:
+                sl_tp_monitor.register_symbol(sym)
+            await sl_tp_monitor.start()
+            # Wire PriceFeed into CryptoFlowProvider so it reads funding/OI
+            # from WebSocket memory instead of REST, and fills its OI history
+            # buffer from pushed events.
+            bot_factory.flow_provider.set_price_feed(price_feed, event_bus)
+            logger.info(
+                f"PriceFeed active: {len(shadow_symbols)} symbols via WebSocket, "
+                f"SLTPMonitor tracking shadow trades, Sentinels in event-driven mode"
+            )
+        except Exception:
+            logger.exception(
+                "PriceFeed startup failed; falling back to REST polling"
+            )
+            # Non-fatal — sentinels already run and will use REST path
+            # because price_feed is set but connect failed; the sentinel's
+            # _on_candle_close won't fire if no CandleClosed events arrive,
+            # so the keepalive loop's day-boundary resets are all that runs.
+            # The scheduled fallback loops in BotRunner still trigger
+            # analysis cycles at the configured interval regardless.
 
     # ── Create FastAPI app ──
     app = create_app()
@@ -463,6 +594,26 @@ async def _run_server() -> None:
         await cleanup_task
     except (asyncio.CancelledError, Exception):
         pass
+    # Stop PriceFeed stack first — SLTPMonitor needs the bus to
+    # unsubscribe, and the fallback manager needs the feed to disconnect.
+    if sl_tp_monitor is not None:
+        try:
+            await sl_tp_monitor.stop()
+        except Exception:
+            logger.debug("SLTPMonitor stop() failed", exc_info=True)
+    if fallback_manager is not None:
+        try:
+            await fallback_manager.stop()
+        except Exception:
+            logger.debug("RESTFallbackManager stop() failed", exc_info=True)
+    try:
+        await bot_factory.options_provider.close()
+    except Exception:
+        logger.debug("OptionsEnrichment close() failed", exc_info=True)
+    try:
+        await bot_factory.equity_provider.close()
+    except Exception:
+        logger.debug("EquityFlowProvider close() failed", exc_info=True)
     await runner.stop()
     server.should_exit = True
     await server_task

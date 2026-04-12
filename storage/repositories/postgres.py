@@ -13,9 +13,11 @@ import asyncpg
 
 from storage.repositories.base import (
     BotRepository,
+    COTCacheRepository,
     CrossBotRepository,
     CycleRepository,
     OISnapshotRepository,
+    RegSHOCacheRepository,
     RuleRepository,
     TradeRepository,
 )
@@ -96,6 +98,39 @@ CREATE TABLE IF NOT EXISTS bots (
 );
 """
 
+_CREATE_REGSHO_CACHE = """
+CREATE TABLE IF NOT EXISTS regsho_cache (
+    symbol TEXT NOT NULL,
+    trade_date DATE NOT NULL,
+    short_volume BIGINT,
+    total_volume BIGINT,
+    short_volume_ratio DOUBLE PRECISION,
+    PRIMARY KEY (symbol, trade_date)
+);
+"""
+
+_CREATE_REGSHO_CACHE_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_regsho_cache_symbol_date
+    ON regsho_cache (symbol, trade_date DESC);
+"""
+
+_CREATE_COT_CACHE = """
+CREATE TABLE IF NOT EXISTS cot_cache (
+    symbol TEXT NOT NULL,
+    report_date DATE NOT NULL,
+    managed_money_net DOUBLE PRECISION,
+    commercial_net DOUBLE PRECISION,
+    total_oi DOUBLE PRECISION,
+    raw_json TEXT,
+    PRIMARY KEY (symbol, report_date)
+);
+"""
+
+_CREATE_COT_CACHE_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_cot_cache_symbol_date
+    ON cot_cache (symbol, report_date DESC);
+"""
+
 _CREATE_OI_SNAPSHOTS = """
 CREATE TABLE IF NOT EXISTS oi_snapshots (
     symbol TEXT NOT NULL,
@@ -130,6 +165,10 @@ _ALL_TABLES = [
     _CREATE_CROSS_BOT_SIGNALS,
     _CREATE_OI_SNAPSHOTS,
     _CREATE_OI_SNAPSHOTS_INDEX,
+    _CREATE_COT_CACHE,
+    _CREATE_COT_CACHE_INDEX,
+    _CREATE_REGSHO_CACHE,
+    _CREATE_REGSHO_CACHE_INDEX,
 ]
 
 
@@ -607,6 +646,170 @@ class PostgresOISnapshotRepository(OISnapshotRepository):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# COT Cache Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+class PostgresCOTCacheRepository(COTCacheRepository):
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def upsert(
+        self,
+        symbol: str,
+        report_date,
+        *,
+        managed_money_net: float | None,
+        commercial_net: float | None,
+        total_oi: float | None,
+        raw_json: str | None = None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO cot_cache (symbol, report_date, "
+                "managed_money_net, commercial_net, total_oi, raw_json) "
+                "VALUES ($1, $2, $3, $4, $5, $6) "
+                "ON CONFLICT (symbol, report_date) DO UPDATE SET "
+                "managed_money_net = EXCLUDED.managed_money_net, "
+                "commercial_net = EXCLUDED.commercial_net, "
+                "total_oi = EXCLUDED.total_oi, "
+                "raw_json = EXCLUDED.raw_json",
+                symbol,
+                report_date,
+                float(managed_money_net) if managed_money_net is not None else None,
+                float(commercial_net) if commercial_net is not None else None,
+                float(total_oi) if total_oi is not None else None,
+                raw_json,
+            )
+
+    async def get_recent(self, symbol: str, limit: int = 52) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, report_date, managed_money_net, "
+                "commercial_net, total_oi, raw_json "
+                "FROM cot_cache WHERE symbol = $1 "
+                "ORDER BY report_date DESC LIMIT $2",
+                symbol,
+                int(limit),
+            )
+        # Reverse so caller gets ascending order for rolling stats.
+        return [
+            {
+                "symbol": r["symbol"],
+                "report_date": r["report_date"],
+                "managed_money_net": (
+                    float(r["managed_money_net"])
+                    if r["managed_money_net"] is not None
+                    else None
+                ),
+                "commercial_net": (
+                    float(r["commercial_net"])
+                    if r["commercial_net"] is not None
+                    else None
+                ),
+                "total_oi": (
+                    float(r["total_oi"]) if r["total_oi"] is not None else None
+                ),
+                "raw_json": r["raw_json"],
+            }
+            for r in reversed(rows)
+        ]
+
+    async def cleanup_older_than_weeks(self, weeks: int) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM cot_cache "
+                "WHERE report_date < NOW() - make_interval(weeks => $1)",
+                int(weeks),
+            )
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RegSHO Cache Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+class PostgresRegSHOCacheRepository(RegSHOCacheRepository):
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def upsert(
+        self,
+        symbol: str,
+        trade_date,
+        *,
+        short_volume: int | None,
+        total_volume: int | None,
+        short_volume_ratio: float | None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO regsho_cache (symbol, trade_date, "
+                "short_volume, total_volume, short_volume_ratio) "
+                "VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT (symbol, trade_date) DO UPDATE SET "
+                "short_volume = EXCLUDED.short_volume, "
+                "total_volume = EXCLUDED.total_volume, "
+                "short_volume_ratio = EXCLUDED.short_volume_ratio",
+                symbol,
+                trade_date,
+                int(short_volume) if short_volume is not None else None,
+                int(total_volume) if total_volume is not None else None,
+                float(short_volume_ratio) if short_volume_ratio is not None else None,
+            )
+
+    async def get_recent(self, symbol: str, limit: int = 20) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT symbol, trade_date, short_volume, total_volume, "
+                "short_volume_ratio FROM regsho_cache WHERE symbol = $1 "
+                "ORDER BY trade_date DESC LIMIT $2",
+                symbol,
+                int(limit),
+            )
+        return [
+            {
+                "symbol": r["symbol"],
+                "trade_date": r["trade_date"],
+                "short_volume": (
+                    int(r["short_volume"])
+                    if r["short_volume"] is not None
+                    else None
+                ),
+                "total_volume": (
+                    int(r["total_volume"])
+                    if r["total_volume"] is not None
+                    else None
+                ),
+                "short_volume_ratio": (
+                    float(r["short_volume_ratio"])
+                    if r["short_volume_ratio"] is not None
+                    else None
+                ),
+            }
+            for r in reversed(rows)
+        ]
+
+    async def cleanup_older_than_days(self, days: int) -> int:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM regsho_cache "
+                "WHERE trade_date < NOW() - make_interval(days => $1)",
+                int(days),
+            )
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Container
 # ──────────────────────────────────────────────────────────────────────
 
@@ -640,6 +843,8 @@ class PostgresRepositories:
         self._bots: PostgresBotRepository | None = None
         self._cross_bot: PostgresCrossBotRepository | None = None
         self._oi_snapshots: PostgresOISnapshotRepository | None = None
+        self._cot_cache: PostgresCOTCacheRepository | None = None
+        self._regsho_cache: PostgresRegSHOCacheRepository | None = None
 
     async def init_db(self) -> None:
         """Create connection pool and all tables if they don't exist.
@@ -671,6 +876,8 @@ class PostgresRepositories:
             self._bots = None
             self._cross_bot = None
             self._oi_snapshots = None
+            self._cot_cache = None
+            self._regsho_cache = None
             logger.info("PostgreSQL connection pool closed")
 
     async def health_check(self) -> dict:
@@ -740,3 +947,15 @@ class PostgresRepositories:
         if self._oi_snapshots is None:
             self._oi_snapshots = PostgresOISnapshotRepository(self._ensure_pool())
         return self._oi_snapshots
+
+    @property
+    def cot_cache(self) -> PostgresCOTCacheRepository:
+        if self._cot_cache is None:
+            self._cot_cache = PostgresCOTCacheRepository(self._ensure_pool())
+        return self._cot_cache
+
+    @property
+    def regsho_cache(self) -> PostgresRegSHOCacheRepository:
+        if self._regsho_cache is None:
+            self._regsho_cache = PostgresRegSHOCacheRepository(self._ensure_pool())
+        return self._regsho_cache

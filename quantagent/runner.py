@@ -48,6 +48,7 @@ class BotRunner:
         event_bus: EventBus,
         bot_manager: BotManager,
         shadow_mode: bool = False,
+        price_feed=None,
     ) -> None:
         self._repos = repos
         self._adapter_factory = adapter_factory
@@ -55,6 +56,9 @@ class BotRunner:
         self._bus = event_bus
         self._bot_manager = bot_manager
         self._shadow_mode = shadow_mode
+        # Sprint Week 7 Task 7: optional PriceFeed threaded into every
+        # SentinelMonitor so they switch to event-driven mode (zero REST).
+        self._price_feed = price_feed
 
         self._sentinels: dict[str, SentinelMonitor] = {}
         self._sentinel_tasks: dict[str, asyncio.Task] = {}
@@ -260,7 +264,14 @@ class BotRunner:
                 symbol=symbol,
                 timeframe=timeframe,
                 trade_repo=sentinel_trade_repo,
+                price_feed=self._price_feed,
             )
+            # When a PriceFeed is wired, the external SLTPMonitor owns
+            # tick-level SL/TP resolution — tell Sentinel to skip its
+            # own candle-close _check_shadow_sl_tp poll so they don't
+            # race. The flag is harmless when no SLTPMonitor exists.
+            if self._price_feed is not None:
+                sentinel.set_sl_tp_monitor_active(True)
             # Activate the Task 11 escalation feedback loop: subscribe
             # this sentinel to SetupResult events so it learns whether
             # the analysis pipeline turned each SetupDetected into a

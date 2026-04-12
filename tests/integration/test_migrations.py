@@ -129,6 +129,40 @@ class TestMigrationStructure:
         assert "def downgrade" in content
         assert 'drop_table("oi_snapshots")' in content
 
+    def test_cot_cache_migration_exists(self):
+        path = Path("alembic/versions/006_cot_cache.py")
+        assert path.exists()
+        content = path.read_text()
+        assert 'revision: str = "006"' in content
+        assert 'down_revision: Union[str, None] = "005"' in content
+        assert 'create_table(' in content
+        assert '"cot_cache"' in content
+        assert '"symbol"' in content
+        assert '"report_date"' in content
+        assert '"managed_money_net"' in content
+        assert '"commercial_net"' in content
+        assert '"total_oi"' in content
+        assert "PrimaryKeyConstraint" in content
+        assert "ix_cot_cache_symbol_date" in content
+        assert 'drop_table("cot_cache")' in content
+
+    def test_regsho_cache_migration_exists(self):
+        path = Path("alembic/versions/007_regsho_cache.py")
+        assert path.exists()
+        content = path.read_text()
+        assert 'revision: str = "007"' in content
+        assert 'down_revision: Union[str, None] = "006"' in content
+        assert 'create_table(' in content
+        assert '"regsho_cache"' in content
+        assert '"symbol"' in content
+        assert '"trade_date"' in content
+        assert '"short_volume"' in content
+        assert '"total_volume"' in content
+        assert '"short_volume_ratio"' in content
+        assert "PrimaryKeyConstraint" in content
+        assert "ix_regsho_cache_symbol_date" in content
+        assert 'drop_table("regsho_cache")' in content
+
 
 # ---------------------------------------------------------------------------
 # SQLite schema parity tests — ensure DDL matches migration
@@ -154,8 +188,8 @@ class TestSQLiteSchemaParity:
                 tables = [row[0] async for row in cursor]
 
         expected = [
-            "bots", "cross_bot_signals", "cycles", "oi_snapshots",
-            "rules", "trades",
+            "bots", "cot_cache", "cross_bot_signals", "cycles",
+            "oi_snapshots", "regsho_cache", "rules", "trades",
         ]
         assert tables == expected
 

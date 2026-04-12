@@ -656,6 +656,205 @@ class TestOISnapshotRepository:
 
 
 # ---------------------------------------------------------------------------
+# COTCacheRepository
+# ---------------------------------------------------------------------------
+
+
+class TestCOTCacheRepository:
+
+    @pytest.mark.asyncio
+    async def test_upsert_and_get_recent_roundtrip(self, repos):
+        from datetime import date
+        await repos.cot_cache.upsert(
+            "GOLD-USDC", date(2026, 3, 31),
+            managed_money_net=100_000.0,
+            commercial_net=-80_000.0,
+            total_oi=500_000.0,
+        )
+        rows = await repos.cot_cache.get_recent("GOLD-USDC")
+        assert len(rows) == 1
+        assert rows[0]["managed_money_net"] == 100_000.0
+        assert rows[0]["commercial_net"] == -80_000.0
+        assert rows[0]["total_oi"] == 500_000.0
+
+    @pytest.mark.asyncio
+    async def test_upsert_replaces_existing_row(self, repos):
+        from datetime import date
+        d = date(2026, 3, 31)
+        await repos.cot_cache.upsert(
+            "GOLD-USDC", d,
+            managed_money_net=1.0, commercial_net=1.0, total_oi=1.0,
+        )
+        await repos.cot_cache.upsert(
+            "GOLD-USDC", d,
+            managed_money_net=99.0, commercial_net=99.0, total_oi=99.0,
+        )
+        rows = await repos.cot_cache.get_recent("GOLD-USDC")
+        assert len(rows) == 1
+        assert rows[0]["managed_money_net"] == 99.0
+
+    @pytest.mark.asyncio
+    async def test_get_recent_ascending_by_date(self, repos):
+        from datetime import date
+        dates = [date(2026, 3, 3), date(2026, 3, 10), date(2026, 3, 17)]
+        for i, d in enumerate(dates):
+            await repos.cot_cache.upsert(
+                "GOLD-USDC", d,
+                managed_money_net=float(i * 100),
+                commercial_net=0.0, total_oi=0.0,
+            )
+        rows = await repos.cot_cache.get_recent("GOLD-USDC")
+        # Caller expects ascending order for rolling stats
+        assert [r["managed_money_net"] for r in rows] == [0.0, 100.0, 200.0]
+
+    @pytest.mark.asyncio
+    async def test_get_recent_filters_by_symbol(self, repos):
+        from datetime import date
+        await repos.cot_cache.upsert(
+            "GOLD-USDC", date(2026, 3, 31),
+            managed_money_net=1.0, commercial_net=1.0, total_oi=1.0,
+        )
+        await repos.cot_cache.upsert(
+            "SILVER-USDC", date(2026, 3, 31),
+            managed_money_net=2.0, commercial_net=2.0, total_oi=2.0,
+        )
+        gold = await repos.cot_cache.get_recent("GOLD-USDC")
+        silver = await repos.cot_cache.get_recent("SILVER-USDC")
+        assert len(gold) == 1 and gold[0]["managed_money_net"] == 1.0
+        assert len(silver) == 1 and silver[0]["managed_money_net"] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_get_recent_limit_returns_newest(self, repos):
+        from datetime import date, timedelta
+        base = date(2026, 3, 31)
+        for i in range(5):
+            await repos.cot_cache.upsert(
+                "GOLD-USDC", base - timedelta(weeks=i),
+                managed_money_net=float(i),
+                commercial_net=0.0, total_oi=0.0,
+            )
+        rows = await repos.cot_cache.get_recent("GOLD-USDC", limit=3)
+        # Newest three: i=0, 1, 2 → ascending by date
+        mm = [r["managed_money_net"] for r in rows]
+        assert mm == [2.0, 1.0, 0.0]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_older_than_weeks(self, repos):
+        from datetime import date, timedelta
+        now = date.today()
+        await repos.cot_cache.upsert(
+            "GOLD-USDC", now - timedelta(weeks=10),
+            managed_money_net=1.0, commercial_net=0.0, total_oi=0.0,
+        )
+        await repos.cot_cache.upsert(
+            "GOLD-USDC", now - timedelta(weeks=200),
+            managed_money_net=2.0, commercial_net=0.0, total_oi=0.0,
+        )
+        deleted = await repos.cot_cache.cleanup_older_than_weeks(52)
+        assert deleted == 1
+        rows = await repos.cot_cache.get_recent("GOLD-USDC")
+        assert len(rows) == 1
+        assert rows[0]["managed_money_net"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# RegSHOCacheRepository
+# ---------------------------------------------------------------------------
+
+
+class TestRegSHOCacheRepository:
+
+    @pytest.mark.asyncio
+    async def test_upsert_and_get_recent_roundtrip(self, repos):
+        from datetime import date
+        await repos.regsho_cache.upsert(
+            "TSLA", date(2026, 4, 10),
+            short_volume=31_503_665,
+            total_volume=96_692_786,
+            short_volume_ratio=0.3258,
+        )
+        rows = await repos.regsho_cache.get_recent("TSLA")
+        assert len(rows) == 1
+        assert rows[0]["short_volume"] == 31_503_665
+        assert rows[0]["total_volume"] == 96_692_786
+        assert rows[0]["short_volume_ratio"] == pytest.approx(0.3258)
+
+    @pytest.mark.asyncio
+    async def test_upsert_replaces_existing_row(self, repos):
+        from datetime import date
+        d = date(2026, 4, 10)
+        await repos.regsho_cache.upsert(
+            "NVDA", d, short_volume=1, total_volume=2, short_volume_ratio=0.5,
+        )
+        await repos.regsho_cache.upsert(
+            "NVDA", d, short_volume=99, total_volume=200, short_volume_ratio=0.495,
+        )
+        rows = await repos.regsho_cache.get_recent("NVDA")
+        assert len(rows) == 1
+        assert rows[0]["short_volume"] == 99
+
+    @pytest.mark.asyncio
+    async def test_get_recent_ascending_by_date(self, repos):
+        from datetime import date
+        dates = [date(2026, 4, 7), date(2026, 4, 8), date(2026, 4, 9)]
+        for i, d in enumerate(dates):
+            await repos.regsho_cache.upsert(
+                "TSLA", d,
+                short_volume=i, total_volume=100,
+                short_volume_ratio=i / 100,
+            )
+        rows = await repos.regsho_cache.get_recent("TSLA")
+        assert [r["short_volume"] for r in rows] == [0, 1, 2]
+
+    @pytest.mark.asyncio
+    async def test_get_recent_filters_by_symbol(self, repos):
+        from datetime import date
+        await repos.regsho_cache.upsert(
+            "TSLA", date(2026, 4, 10),
+            short_volume=1, total_volume=2, short_volume_ratio=0.5,
+        )
+        await repos.regsho_cache.upsert(
+            "NVDA", date(2026, 4, 10),
+            short_volume=3, total_volume=4, short_volume_ratio=0.75,
+        )
+        tsla = await repos.regsho_cache.get_recent("TSLA")
+        nvda = await repos.regsho_cache.get_recent("NVDA")
+        assert len(tsla) == 1 and tsla[0]["short_volume"] == 1
+        assert len(nvda) == 1 and nvda[0]["short_volume"] == 3
+
+    @pytest.mark.asyncio
+    async def test_get_recent_limit_returns_newest(self, repos):
+        from datetime import date, timedelta
+        base = date(2026, 4, 10)
+        for i in range(5):
+            await repos.regsho_cache.upsert(
+                "TSLA", base - timedelta(days=i),
+                short_volume=i, total_volume=100, short_volume_ratio=i / 100,
+            )
+        rows = await repos.regsho_cache.get_recent("TSLA", limit=3)
+        # Newest three: i=0, 1, 2 → ascending by date
+        assert [r["short_volume"] for r in rows] == [2, 1, 0]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_older_than_days(self, repos):
+        from datetime import date, timedelta
+        today = date.today()
+        await repos.regsho_cache.upsert(
+            "TSLA", today - timedelta(days=5),
+            short_volume=1, total_volume=2, short_volume_ratio=0.5,
+        )
+        await repos.regsho_cache.upsert(
+            "TSLA", today - timedelta(days=90),
+            short_volume=9, total_volume=10, short_volume_ratio=0.9,
+        )
+        deleted = await repos.regsho_cache.cleanup_older_than_days(30)
+        assert deleted == 1
+        rows = await repos.regsho_cache.get_recent("TSLA")
+        assert len(rows) == 1
+        assert rows[0]["short_volume"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Shadow-mode filtering — Task 2 of the Shadow Redesign sprint
 # ---------------------------------------------------------------------------
 
@@ -937,6 +1136,8 @@ class TestFactory:
         assert hasattr(repos, "bots")
         assert hasattr(repos, "cross_bot")
         assert hasattr(repos, "oi_snapshots")
+        assert hasattr(repos, "cot_cache")
+        assert hasattr(repos, "regsho_cache")
 
         # Clean up
         del os.environ["SQLITE_DB_PATH"]

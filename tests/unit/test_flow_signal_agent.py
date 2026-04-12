@@ -93,6 +93,21 @@ def _flow(
     oi_change_4h: float | None = 0.0,
     oi_trend: str = "STABLE",
     data_richness: str = "FULL",
+    put_call_ratio: float | None = None,
+    dvol: float | None = None,
+    dvol_change_24h: float | None = None,
+    skew_25d: float | None = None,
+    gex_regime: str | None = None,
+    cot_speculator_percentile: float | None = None,
+    cot_commercial_net: float | None = None,
+    cot_managed_money_net: float | None = None,
+    cot_weekly_change_pct: float | None = None,
+    cot_divergence: float | None = None,
+    cot_divergence_abs_percentile: float | None = None,
+    short_volume_ratio: float | None = None,
+    svr_zscore: float | None = None,
+    svr_trend: str | None = None,
+    market_open: bool | None = None,
 ) -> FlowOutput:
     return FlowOutput(
         funding_rate=funding_rate,
@@ -101,9 +116,23 @@ def _flow(
         oi_trend=oi_trend,
         nearest_liquidation_above=None,
         nearest_liquidation_below=None,
-        gex_regime=None,
+        gex_regime=gex_regime,
         gex_flip_level=None,
         data_richness=data_richness,
+        put_call_ratio=put_call_ratio,
+        dvol=dvol,
+        dvol_change_24h=dvol_change_24h,
+        skew_25d=skew_25d,
+        cot_speculator_percentile=cot_speculator_percentile,
+        cot_commercial_net=cot_commercial_net,
+        cot_managed_money_net=cot_managed_money_net,
+        cot_weekly_change_pct=cot_weekly_change_pct,
+        cot_divergence=cot_divergence,
+        cot_divergence_abs_percentile=cot_divergence_abs_percentile,
+        short_volume_ratio=short_volume_ratio,
+        svr_zscore=svr_zscore,
+        svr_trend=svr_trend,
+        market_open=market_open,
     )
 
 
@@ -453,3 +482,431 @@ class TestCrashSafety:
         assert OI_DROP_THRESHOLD_PCT == -2.0
         assert OI_BUILD_THRESHOLD_PCT == 2.0
         assert PRICE_LOOKBACK_CANDLES == 12
+
+
+# ---------------------------------------------------------------------------
+# Options rules (BTC / ETH only — higher priority than funding / OI)
+# ---------------------------------------------------------------------------
+
+
+class TestOptionsRules:
+    """Options rules live BEFORE the funding/OI block in the pipeline
+    order and short-circuit whenever their respective fields are
+    populated. Non-BTC/ETH symbols receive FlowOutput with these
+    fields = None from OptionsEnrichment and fall through unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bearish_hedging_fires_on_high_pcr(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(put_call_ratio=1.5, funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        assert result is not None
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.60)
+        assert "hedging" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_complacent_longs_fires_on_low_pcr(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(put_call_ratio=0.3, funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.55)
+        assert "complacent" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_extreme_skew_fires(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(skew_25d=15.0, funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.55)
+        assert "skew" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_volatility_spike_returns_neutral(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                dvol=80.0, dvol_change_24h=25.0, funding_rate=0.005
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "NEUTRAL"
+        assert result.confidence == pytest.approx(0.55)
+        assert "volatility spike" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_positive_gamma_returns_neutral(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(gex_regime="POSITIVE_GAMMA", funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "NEUTRAL"
+        assert result.confidence == pytest.approx(0.50)
+        assert "positive gamma" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_negative_gamma_boosts_divergence(self) -> None:
+        """Negative gamma regime adds +0.10 to the divergence rule's
+        confidence (capped at 0.80)."""
+        agent = FlowSignalAgent()
+        candles = _make_candles(60_000, 62_000)  # +3.3% → "price up"
+        data = _make_market_data(
+            candles=candles,
+            flow=_flow(
+                funding_rate=-0.002,
+                oi_change_4h=-3.0,
+                gex_regime="NEGATIVE_GAMMA",
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.80)  # 0.70 + 0.10
+        assert "divergence" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_negative_gamma_without_divergence_falls_through(self) -> None:
+        """Negative gamma alone does NOT fire anything — it only boosts
+        divergence/accumulation rules. A flat market with negative
+        gamma reaches the default NEUTRAL."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                funding_rate=0.005,
+                oi_change_4h=0.0,
+                gex_regime="NEGATIVE_GAMMA",
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "NEUTRAL"
+        assert result.confidence == pytest.approx(0.30)
+
+    @pytest.mark.asyncio
+    async def test_options_rules_none_fields_fall_through_to_funding(self) -> None:
+        """Non-BTC/ETH symbols receive None options fields and the
+        extreme-funding rule must still fire normally."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(funding_rate=0.15),  # above 0.10% extreme
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        # 0.55 is the extreme funding confidence; also matches
+        # OPTIONS_CONTRARIAN_CONFIDENCE but the reasoning distinguishes.
+        assert "crowded long" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_options_rule_priority_high_pcr_wins_over_funding(self) -> None:
+        """High PCR and extreme funding fire simultaneously. Options
+        rule must win because it's earlier in the pipeline."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(put_call_ratio=1.5, funding_rate=0.15),
+        )
+        result = await agent.analyze(data)
+        assert result.confidence == pytest.approx(0.60)  # options hedging, not 0.55
+        assert "hedging" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_pcr_at_threshold_does_not_fire(self) -> None:
+        """PCR must be strictly greater than 1.2 — exactly 1.2 falls through."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(put_call_ratio=1.2, funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "NEUTRAL"  # default fall-through
+
+
+# ---------------------------------------------------------------------------
+# COT rules (commodity only — gated by None-guards on the COT fields)
+# ---------------------------------------------------------------------------
+
+
+class TestCOTRules:
+    """COT rules fire only when CommodityFlowProvider has populated the
+    cot_* fields — for non-commodity symbols every field is None and
+    the rules short-circuit to the funding/OI block unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_extreme_speculator_long_bearish(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=95.0,
+                cot_managed_money_net=300_000.0,
+                cot_commercial_net=-250_000.0,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.55)
+        assert "extreme speculator long" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_extreme_speculator_short_bullish(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=5.0,
+                cot_managed_money_net=-50_000.0,
+                cot_commercial_net=30_000.0,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BULLISH"
+        assert result.confidence == pytest.approx(0.55)
+        assert "extreme speculator short" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_commercial_divergence_bullish(self) -> None:
+        """Commercials MORE long than speculators + extreme
+        divergence + speculators low."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=20.0,  # below 30
+                cot_managed_money_net=-50_000.0,
+                cot_commercial_net=150_000.0,
+                cot_divergence=200_000.0,  # commercial - mm > 0
+                cot_divergence_abs_percentile=90.0,  # top 10%
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BULLISH"
+        assert result.confidence == pytest.approx(0.60)
+        assert "follow the hedgers" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_commercial_divergence_bearish(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=85.0,  # above 70
+                cot_managed_money_net=300_000.0,
+                cot_commercial_net=-200_000.0,
+                cot_divergence=-500_000.0,  # commercial - mm < 0
+                cot_divergence_abs_percentile=95.0,  # top 5%
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.60)
+        assert "smart money exiting" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_cot_rules_do_not_fire_for_btc(self) -> None:
+        """A BTC flow with every COT field None must fall through to
+        the funding/OI rules unchanged. Extreme funding fires instead."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(funding_rate=0.15),  # > 0.10% extreme
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert "crowded long" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_middle_speculator_percentile_falls_through(self) -> None:
+        """50th-percentile speculator positioning hits neither COT rule."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=50.0,
+                cot_managed_money_net=0.0,
+                cot_commercial_net=0.0,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        # No COT rule fires, falls through to default NEUTRAL
+        assert result.direction == "NEUTRAL"
+
+    @pytest.mark.asyncio
+    async def test_divergence_not_extreme_does_not_fire(self) -> None:
+        """Commercial-divergence rules require top 20% abs percentile."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=20.0,
+                cot_divergence=50_000.0,
+                cot_divergence_abs_percentile=60.0,  # below 80
+                cot_managed_money_net=0.0,
+                cot_commercial_net=50_000.0,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "NEUTRAL"
+
+    @pytest.mark.asyncio
+    async def test_extreme_long_has_priority_over_divergence(self) -> None:
+        """Rule order: extreme-long fires first even when a divergence
+        setup is technically also present."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                cot_speculator_percentile=95.0,
+                cot_divergence=-500_000.0,
+                cot_divergence_abs_percentile=95.0,
+                cot_managed_money_net=400_000.0,
+                cot_commercial_net=-100_000.0,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        # confidence 0.55 matches extreme-long, not 0.60 (divergence)
+        assert result.confidence == pytest.approx(0.55)
+        assert "extreme speculator long" in result.reasoning.lower()
+
+
+# ---------------------------------------------------------------------------
+# RegSHO equity rules (TSLA / NVDA / GOOGL only)
+# ---------------------------------------------------------------------------
+
+
+class TestRegSHORules:
+    """RegSHO rules fire only when EquityFlowProvider has populated
+    the svr_* / market_open fields. Non-equity symbols have every
+    field None and fall through cleanly."""
+
+    @pytest.mark.asyncio
+    async def test_extreme_short_volume_bearish(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                svr_zscore=2.5,
+                svr_trend="STABLE",
+                market_open=True,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.55)
+        assert "extreme short volume" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_short_squeeze_setup_bullish(self) -> None:
+        """High Z-score + rising trend + price up → squeeze wins over
+        plain extreme-short rule."""
+        agent = FlowSignalAgent()
+        candles = _make_candles(60_000, 62_000)  # +3.3% → price up
+        data = _make_market_data(
+            candles=candles,
+            flow=_flow(
+                svr_zscore=2.5,
+                svr_trend="RISING",
+                market_open=True,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BULLISH"
+        assert result.confidence == pytest.approx(0.60)
+        assert "squeeze" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_short_volume_collapse_bullish(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(
+                svr_zscore=-2.0,
+                market_open=True,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BULLISH"
+        assert result.confidence == pytest.approx(0.50)
+        assert "collapse" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_outside_market_hours_neutral(self) -> None:
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(market_open=False, funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "NEUTRAL"
+        assert result.confidence == pytest.approx(0.40)
+        assert "market hours" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_regsho_rules_do_not_fire_for_crypto(self) -> None:
+        """BTC-style flow with every svr_* / market_open = None must
+        fall through to the funding rule unchanged."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(funding_rate=0.15),  # extreme crowded long
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert "crowded long" in result.reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_market_open_true_does_not_fire_closed_rule(self) -> None:
+        """market_open=True must NOT fire the outside-market-hours
+        rule; rule 4 is gated on the False branch only."""
+        agent = FlowSignalAgent()
+        data = _make_market_data(
+            flow=_flow(market_open=True, funding_rate=0.005),
+        )
+        result = await agent.analyze(data)
+        # Falls through to default NEUTRAL (0.30), not the closed rule
+        assert result.direction == "NEUTRAL"
+        assert result.confidence == pytest.approx(0.30)
+
+    @pytest.mark.asyncio
+    async def test_squeeze_beats_plain_extreme_short_when_both_fire(self) -> None:
+        """Priority: squeeze (rule 2) wins over extreme-short (rule 1)
+        when the squeeze conditions are all satisfied."""
+        agent = FlowSignalAgent()
+        candles = _make_candles(60_000, 62_000)
+        data = _make_market_data(
+            candles=candles,
+            flow=_flow(
+                svr_zscore=3.0,
+                svr_trend="RISING",
+                market_open=True,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BULLISH"  # squeeze, not bearish
+        assert result.confidence == pytest.approx(0.60)
+
+    @pytest.mark.asyncio
+    async def test_squeeze_requires_price_up(self) -> None:
+        """High Z-score + RISING trend but FLAT price → bearish
+        extreme-short rule fires, not the squeeze."""
+        agent = FlowSignalAgent()
+        # Build flat candles so price_change_pct ~= 0
+        candles = _make_candles(60_000, 60_000)
+        data = _make_market_data(
+            candles=candles,
+            flow=_flow(
+                svr_zscore=3.0,
+                svr_trend="RISING",
+                market_open=True,
+                funding_rate=0.005,
+            ),
+        )
+        result = await agent.analyze(data)
+        assert result.direction == "BEARISH"
+        assert result.confidence == pytest.approx(0.55)

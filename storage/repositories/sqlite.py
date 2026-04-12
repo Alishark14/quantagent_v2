@@ -12,9 +12,11 @@ import aiosqlite
 
 from storage.repositories.base import (
     BotRepository,
+    COTCacheRepository,
     CrossBotRepository,
     CycleRepository,
     OISnapshotRepository,
+    RegSHOCacheRepository,
     RuleRepository,
     TradeRepository,
 )
@@ -95,6 +97,39 @@ CREATE TABLE IF NOT EXISTS bots (
 );
 """
 
+_CREATE_REGSHO_CACHE = """
+CREATE TABLE IF NOT EXISTS regsho_cache (
+    symbol TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    short_volume INTEGER,
+    total_volume INTEGER,
+    short_volume_ratio REAL,
+    PRIMARY KEY (symbol, trade_date)
+);
+"""
+
+_CREATE_REGSHO_CACHE_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_regsho_cache_symbol_date
+    ON regsho_cache (symbol, trade_date DESC);
+"""
+
+_CREATE_COT_CACHE = """
+CREATE TABLE IF NOT EXISTS cot_cache (
+    symbol TEXT NOT NULL,
+    report_date TEXT NOT NULL,
+    managed_money_net REAL,
+    commercial_net REAL,
+    total_oi REAL,
+    raw_json TEXT,
+    PRIMARY KEY (symbol, report_date)
+);
+"""
+
+_CREATE_COT_CACHE_INDEX = """
+CREATE INDEX IF NOT EXISTS ix_cot_cache_symbol_date
+    ON cot_cache (symbol, report_date DESC);
+"""
+
 _CREATE_OI_SNAPSHOTS = """
 CREATE TABLE IF NOT EXISTS oi_snapshots (
     symbol TEXT NOT NULL,
@@ -129,6 +164,10 @@ _ALL_TABLES = [
     _CREATE_CROSS_BOT_SIGNALS,
     _CREATE_OI_SNAPSHOTS,
     _CREATE_OI_SNAPSHOTS_INDEX,
+    _CREATE_COT_CACHE,
+    _CREATE_COT_CACHE_INDEX,
+    _CREATE_REGSHO_CACHE,
+    _CREATE_REGSHO_CACHE_INDEX,
 ]
 
 
@@ -607,6 +646,201 @@ class SQLiteOISnapshotRepository(OISnapshotRepository):
             return cursor.rowcount or 0
 
 
+# ──────────────────────────────────────────────────────────────────────
+# COT Cache Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _to_iso_date(value) -> str:
+    """Coerce a date-like value to ISO yyyy-mm-dd for the SQLite TEXT column."""
+    if value is None:
+        return datetime.now(timezone.utc).date().isoformat()
+    if isinstance(value, str):
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+class SQLiteCOTCacheRepository(COTCacheRepository):
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    async def upsert(
+        self,
+        symbol: str,
+        report_date,
+        *,
+        managed_money_net: float | None,
+        commercial_net: float | None,
+        total_oi: float | None,
+        raw_json: str | None = None,
+    ) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "INSERT INTO cot_cache (symbol, report_date, "
+                "managed_money_net, commercial_net, total_oi, raw_json) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (symbol, report_date) DO UPDATE SET "
+                "managed_money_net = excluded.managed_money_net, "
+                "commercial_net = excluded.commercial_net, "
+                "total_oi = excluded.total_oi, "
+                "raw_json = excluded.raw_json",
+                (
+                    symbol,
+                    _to_iso_date(report_date),
+                    float(managed_money_net)
+                    if managed_money_net is not None
+                    else None,
+                    float(commercial_net)
+                    if commercial_net is not None
+                    else None,
+                    float(total_oi) if total_oi is not None else None,
+                    raw_json,
+                ),
+            )
+            await db.commit()
+
+    async def get_recent(self, symbol: str, limit: int = 52) -> list[dict]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT symbol, report_date, managed_money_net, "
+                "commercial_net, total_oi, raw_json "
+                "FROM cot_cache WHERE symbol = ? "
+                "ORDER BY report_date DESC LIMIT ?",
+                (symbol, int(limit)),
+            ) as cursor:
+                rows = [dict(row) async for row in cursor]
+
+        from datetime import date
+
+        def _parse_date(s) -> object:
+            if isinstance(s, str):
+                try:
+                    return date.fromisoformat(s)
+                except ValueError:
+                    return s
+            return s
+
+        return [
+            {
+                "symbol": r["symbol"],
+                "report_date": _parse_date(r["report_date"]),
+                "managed_money_net": r["managed_money_net"],
+                "commercial_net": r["commercial_net"],
+                "total_oi": r["total_oi"],
+                "raw_json": r["raw_json"],
+            }
+            for r in reversed(rows)
+        ]
+
+    async def cleanup_older_than_weeks(self, weeks: int) -> int:
+        # Compute cutoff in Python — SQLite has no interval arithmetic
+        # and our report_date column is TEXT (ISO string) so string
+        # comparison is valid as long as it's ISO-formatted.
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc).date() - timedelta(weeks=int(weeks))
+        ).isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM cot_cache WHERE report_date < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return cursor.rowcount or 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RegSHO Cache Repository
+# ──────────────────────────────────────────────────────────────────────
+
+
+class SQLiteRegSHOCacheRepository(RegSHOCacheRepository):
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    async def upsert(
+        self,
+        symbol: str,
+        trade_date,
+        *,
+        short_volume: int | None,
+        total_volume: int | None,
+        short_volume_ratio: float | None,
+    ) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "INSERT INTO regsho_cache (symbol, trade_date, "
+                "short_volume, total_volume, short_volume_ratio) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (symbol, trade_date) DO UPDATE SET "
+                "short_volume = excluded.short_volume, "
+                "total_volume = excluded.total_volume, "
+                "short_volume_ratio = excluded.short_volume_ratio",
+                (
+                    symbol,
+                    _to_iso_date(trade_date),
+                    int(short_volume) if short_volume is not None else None,
+                    int(total_volume) if total_volume is not None else None,
+                    float(short_volume_ratio)
+                    if short_volume_ratio is not None
+                    else None,
+                ),
+            )
+            await db.commit()
+
+    async def get_recent(self, symbol: str, limit: int = 20) -> list[dict]:
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT symbol, trade_date, short_volume, total_volume, "
+                "short_volume_ratio FROM regsho_cache WHERE symbol = ? "
+                "ORDER BY trade_date DESC LIMIT ?",
+                (symbol, int(limit)),
+            ) as cursor:
+                rows = [dict(row) async for row in cursor]
+
+        from datetime import date
+
+        def _parse_date(s):
+            if isinstance(s, str):
+                try:
+                    return date.fromisoformat(s)
+                except ValueError:
+                    return s
+            return s
+
+        return [
+            {
+                "symbol": r["symbol"],
+                "trade_date": _parse_date(r["trade_date"]),
+                "short_volume": r["short_volume"],
+                "total_volume": r["total_volume"],
+                "short_volume_ratio": r["short_volume_ratio"],
+            }
+            for r in reversed(rows)
+        ]
+
+    async def cleanup_older_than_days(self, days: int) -> int:
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc).date() - timedelta(days=int(days))
+        ).isoformat()
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM regsho_cache WHERE trade_date < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return cursor.rowcount or 0
+
+
 # ─────────────��────────────────────────────────���───────────────────────
 # Container
 # ─────────────────────────────────���────────────────────────────────────
@@ -623,6 +857,8 @@ class SQLiteRepositories:
         self._bots = SQLiteBotRepository(db_path)
         self._cross_bot = SQLiteCrossBotRepository(db_path)
         self._oi_snapshots = SQLiteOISnapshotRepository(db_path)
+        self._cot_cache = SQLiteCOTCacheRepository(db_path)
+        self._regsho_cache = SQLiteRegSHOCacheRepository(db_path)
 
     async def init_db(self) -> None:
         """Create all tables if they don't exist."""
@@ -655,3 +891,11 @@ class SQLiteRepositories:
     @property
     def oi_snapshots(self) -> SQLiteOISnapshotRepository:
         return self._oi_snapshots
+
+    @property
+    def cot_cache(self) -> SQLiteCOTCacheRepository:
+        return self._cot_cache
+
+    @property
+    def regsho_cache(self) -> SQLiteRegSHOCacheRepository:
+        return self._regsho_cache

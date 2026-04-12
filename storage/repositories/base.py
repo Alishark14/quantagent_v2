@@ -145,6 +145,116 @@ class OISnapshotRepository(ABC):
         ...
 
 
+class COTCacheRepository(ABC):
+    """Persistent cache for weekly CFTC Commitment of Traders snapshots.
+
+    CFTC publishes COT data once a week (Friday evening for data as of
+    the prior Tuesday). The cot_reports library can be flaky — the
+    CFTC ZIP server sometimes 503s and a transient failure on a
+    restart would leave ``CommodityFlowProvider`` blind until the next
+    successful fetch. Persisting the weekly snapshots means:
+
+    * Warmup on process boot rebuilds the 52-week history without a
+      single network call.
+    * A live fetch failure falls back transparently to the stored
+      history — the provider still serves the most recent snapshot.
+    * The percentile / divergence math runs off a rolling window that
+      survives restarts.
+    """
+
+    @abstractmethod
+    async def upsert(
+        self,
+        symbol: str,
+        report_date,
+        *,
+        managed_money_net: float | None,
+        commercial_net: float | None,
+        total_oi: float | None,
+        raw_json: str | None = None,
+    ) -> None:
+        """Insert or update a single (symbol, report_date) row.
+
+        Implementations must be idempotent on the composite primary
+        key (ON CONFLICT DO UPDATE) so re-running a weekly fetch
+        against a row we already have refreshes the stored values
+        instead of failing.
+        """
+        ...
+
+    @abstractmethod
+    async def get_recent(
+        self, symbol: str, limit: int = 52
+    ) -> list[dict]:
+        """Return up to ``limit`` most recent rows for ``symbol``.
+
+        Rows ascending by report_date so the caller can feed the list
+        straight into a rolling percentile/divergence computation.
+        Each row is a dict with keys ``symbol``, ``report_date``
+        (datetime.date), ``managed_money_net``, ``commercial_net``,
+        ``total_oi``, ``raw_json``.
+        """
+        ...
+
+    @abstractmethod
+    async def cleanup_older_than_weeks(self, weeks: int) -> int:
+        """Delete rows older than ``weeks`` weeks. Returns rows deleted."""
+        ...
+
+
+class RegSHOCacheRepository(ABC):
+    """Persistent cache for daily FINRA RegSHO short-volume snapshots.
+
+    FINRA publishes a daily off-exchange short-volume file for every
+    US equity; ``EquityFlowProvider`` pulls that file once per trading
+    day and computes a 20-day Z-score / trend off the rolling history.
+    Persisting the per-(symbol, trade_date) rows means:
+
+    * Warmup on process boot rebuilds the 20-day window without a
+      single network call, so the first analysis cycle after restart
+      already has Z-scores for TSLA / NVDA / GOOGL.
+    * A live FINRA fetch failure (holiday, server outage, network
+      blip) falls back transparently to the stored history.
+    * The same table can be queried by the analytics layer to
+      backtest SVR signals without touching FINRA again.
+    """
+
+    @abstractmethod
+    async def upsert(
+        self,
+        symbol: str,
+        trade_date,
+        *,
+        short_volume: int | None,
+        total_volume: int | None,
+        short_volume_ratio: float | None,
+    ) -> None:
+        """Insert or update one (symbol, trade_date) row.
+
+        Implementations must be idempotent on the composite PK so the
+        same day's fetch can be replayed without duplicate-key errors.
+        """
+        ...
+
+    @abstractmethod
+    async def get_recent(
+        self, symbol: str, limit: int = 20
+    ) -> list[dict]:
+        """Return up to ``limit`` most-recent rows for ``symbol``.
+
+        Rows come back ASCENDING by trade_date so the caller can feed
+        them straight into a rolling Z-score / trend computation.
+        Each dict: ``symbol``, ``trade_date`` (datetime.date),
+        ``short_volume``, ``total_volume``, ``short_volume_ratio``.
+        """
+        ...
+
+    @abstractmethod
+    async def cleanup_older_than_days(self, days: int) -> int:
+        """Delete rows older than ``days`` days. Returns rows deleted."""
+        ...
+
+
 class CycleRepository(ABC):
     """Repository for analysis cycle records.
 
